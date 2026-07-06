@@ -1,0 +1,72 @@
+# ==========================================
+# GITIGNORE CHO DỰ ÁN TIKTOK AUTOMATION DUBBING
+# ==========================================
+
+# --- Virtual Environments (Môi trường ảo Python) ---
+backend/.venv/
+.venv/
+venv/
+env/
+ENV/
+python/
+
+# --- Dependency Folders (Thư viện Node.js) ---
+node_modules/
+frontend/node_modules/
+package-lock.json
+yarn.lock
+pnpm-lock.yaml
+
+# --- Cache Folders (Dữ liệu cache mô hình AI cực nặng) ---
+backend/.cache/
+.cache/
+**/.cache/
+.pytest_cache/
+.ipynb_checkpoints/
+
+# --- Large Binaries (Các file thực thi lớn như FFmpeg, Ollama) ---
+backend/bin/
+**/bin/*.exe
+**/bin/ollama/
+*.exe
+*.dll
+*.dylib
+*.so
+
+# --- User Data & Temporary Working Files (Bộ nhớ lưu trữ video/audio) ---
+storage/
+backend/temp/
+**/temp/
+*.log
+
+# --- Build Artifacts (Thư mục build frontend) ---
+frontend/dist/
+dist/
+build/
+out/
+
+# --- Environment Configurations (Thông tin bảo mật cấu hình) ---
+backend/.env
+frontend/.env
+.env
+.env*.local
+
+# --- Python Bytecode & Runtime ---
+__pycache__/
+**/*.pyc
+**/*.pyo
+**/*.pyd
+
+# --- IDEs / Editors (Cấu hình bộ soạn thảo) ---
+.vscode/
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.swp
+
+# --- OS Specific Files (Hệ điều hành) ---
+.DS_Store
+Thumbs.db
+desktop.ini

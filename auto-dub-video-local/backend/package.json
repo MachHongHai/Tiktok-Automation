@@ -1,0 +1,11 @@
+{
+  "name": "auto-dub-video-local-backend",
+  "version": "1.0.0",
+  "description": "Backend for Auto Dub Video Local",
+  "scripts": {
+    "dev": "node run-dev.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC"
+}

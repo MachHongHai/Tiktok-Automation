@@ -1,0 +1,16 @@
+fastapi
+uvicorn[standard]
+python-multipart
+pydantic
+git+https://github.com/m-bain/whisperX.git
+torch
+torchaudio
+edge-tts
+pydub
+srt
+python-dotenv
+requests
+audioop-lts
+demucs
+
+

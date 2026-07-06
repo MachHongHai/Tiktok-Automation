@@ -1,0 +1,13 @@
+{
+  "name": "auto-dub-video-local-root",
+  "version": "1.0.0",
+  "description": "Root workspace runner for Auto Dub Video Local",
+  "scripts": {
+    "dev:frontend": "npm run dev --prefix frontend",
+    "dev:backend": "npm run dev --prefix backend",
+    "dev": "node run-dev-all.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC"
+}
