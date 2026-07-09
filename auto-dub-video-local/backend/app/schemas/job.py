@@ -1,4 +1,4 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import Optional, Dict
 
 class SubtitleStyle(BaseModel):
@@ -12,7 +12,7 @@ class JobConfig(BaseModel):
     source_language: str = "auto"  # zh, en, auto
     target_language: str = "vi"
     tts_voice: str = "vi-VN-HoaiMyNeural"
-    subtitle_style: SubtitleStyle = SubtitleStyle()
+    subtitle_style: SubtitleStyle = Field(default_factory=SubtitleStyle)
     output_format: str = "keep_ratio"  # tiktok_9_16_crop, keep_ratio, blur_background_9_16
     enable_audio_separation: bool = True
     original_video_volume: int = 60
@@ -34,4 +34,4 @@ class JobInfo(BaseModel):
     created_at: str
     updated_at: str
     error: Optional[str] = None
-    files: Dict[str, Optional[str]] = {}
+    files: Dict[str, Optional[str]] = Field(default_factory=dict)

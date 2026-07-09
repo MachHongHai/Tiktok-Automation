@@ -1,7 +1,7 @@
 import datetime
 import json
 import srt
-from app.job_store import log_to_job
+from app.services.job_store import log_to_job
 
 def split_text_by_length(text: str, max_chars: int) -> str:
     """Wraps text into lines that do not exceed max_chars length."""

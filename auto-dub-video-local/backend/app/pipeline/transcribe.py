@@ -2,7 +2,7 @@ from app.config import WHISPER_MODEL  # Import config first to load .env variabl
 import json
 import torch
 import whisperx
-from app.job_store import log_to_job
+from app.services.job_store import log_to_job
 
 def transcribe(audio_path: str, output_json_path: str, source_language: str, job_id: str):
     """Transcribes and aligns audio using WhisperX."""

@@ -2,7 +2,7 @@ import os
 import json
 from pydub import AudioSegment
 from pydub.effects import speedup
-from app.job_store import log_to_job
+from app.services.job_store import log_to_job
 from app.utils.ffmpeg import get_video_duration
 
 # Maximum allowed speed factor for time-stretching (1.25x = 25% faster for natural speech)

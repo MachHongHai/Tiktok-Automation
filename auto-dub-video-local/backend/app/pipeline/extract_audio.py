@@ -1,5 +1,5 @@
 import subprocess
-from app.job_store import log_to_job
+from app.services.job_store import log_to_job
 from app.pipeline.job_manager import register_process, unregister_process, check_cancellation
 
 def extract_audio(video_path: str, output_wav_path: str, job_id: str):

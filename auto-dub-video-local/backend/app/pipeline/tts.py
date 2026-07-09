@@ -3,7 +3,7 @@ import os
 import json
 import re
 import edge_tts
-from app.job_store import log_to_job
+from app.services.job_store import log_to_job
 
 def preprocess_text_for_tts(text: str) -> str:
     """Preprocesses translation text to ensure compatibility with Edge-TTS.

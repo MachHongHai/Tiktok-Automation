@@ -1,108 +1,124 @@
-# Auto Dub Video Local
+# Auto Dub Video Local Desktop
 
-Ứng dụng web chạy localhost giúp tự động hoá quy trình lồng tiếng (dubbing) và chèn phụ đề tiếng Việt cho video thông qua AI: Import video -> Nhận dạng giọng nói (Whisper) -> Dịch thuật phụ đề -> Lồng tiếng tiếng Việt (edge-tts) -> Đồng bộ timeline -> Render xuất video (FFmpeg).
+Ứng dụng desktop Windows để tự động lồng tiếng và chèn phụ đề tiếng Việt cho video.
 
----
+Pipeline chính:
 
-## 🛠️ Yêu cầu hệ thống (Windows)
+```text
+Import video -> tách audio -> nhận dạng giọng nói -> dịch phụ đề -> tạo giọng TTS -> đồng bộ timeline -> render video
+```
 
-1. **FFmpeg & FFprobe**: Cần thiết để xử lý video và trích xuất/ghép âm thanh.
-   * Tải FFmpeg từ [gyan.dev](https://www.gyan.dev/ffmpeg/builds/).
-   * Giải nén và thêm thư mục `bin` vào biến môi trường **PATH** của hệ thống.
-   * Kiểm tra trong cmd/powershell bằng lệnh: `ffmpeg -version` và `ffprobe -version`.
-2. **Python 3.10+**: Để chạy backend FastAPI và mô hình AI.
-3. **Node.js 18+ & npm**: Để chạy giao diện React (Vite).
+Ứng dụng hiện chạy bằng giao diện desktop Python, không cần Node.js, React, Vite hoặc trình duyệt để sử dụng.
 
----
+## Cấu Trúc Dự Án
 
-## 🚀 Hướng dẫn Cài đặt & Chạy ứng dụng
+```text
+auto-dub-video-local/
+  desktop_app.py              Entry point chạy desktop app
+  backend/
+    app/
+      desktop/                Giao diện desktop tkinter/ttk
+      core/                   Runtime path, logging, event nội bộ
+      schemas/                Pydantic models
+      services/               Job store, dịch thuật, Ollama runtime
+      pipeline/               Các bước xử lý video/audio/subtitle/TTS
+      utils/                  Helper FFmpeg, timecode, file
+    requirements.txt
+  scripts/
+    install-desktop-env.ps1   Tạo venv và cài dependency
+    run-desktop.ps1           Chạy app desktop từ source
+    build-exe.ps1             Build file .exe bằng PyInstaller
+  docs/
+  storage/                    Job output khi chạy từ source
+```
 
-### Cách 1: Chạy trực tiếp trên máy local (Khuyên dùng)
+Khi chạy từ file `.exe`, dữ liệu người dùng sẽ nằm trong:
 
-#### 1. Khởi động Backend
-Mở một cửa sổ Terminal mới (CMD hoặc Powershell) tại thư mục gốc của project:
-```bash
+```text
+%LOCALAPPDATA%\AutoDubVideoLocal\
+  storage\jobs\
+  logs\app.log
+  .cache\
+```
+
+## Cài Đặt Chạy Từ Source
+
+Yêu cầu:
+
+- Windows 10/11
+- Python 3.10+
+- FFmpeg và FFprobe, hoặc đặt binary trong `backend/bin`
+
+Chạy:
+
+```powershell
+.\scripts\install-desktop-env.ps1
+.\scripts\run-desktop.ps1
+```
+
+Nếu không dùng script:
+
+```powershell
 cd backend
 python -m venv .venv
-.venv\Scripts\activate
+.\.venv\Scripts\activate
 pip install -r requirements.txt
-uvicorn app.main:app --reload --port 8000
-```
-*Lưu ý:* Khi chạy lần đầu tiên, hệ thống sẽ tự động tải mô hình `faster-whisper` (`small` theo mặc định).
-
-#### 2. Khởi động Frontend
-Mở một cửa sổ Terminal thứ hai tại thư mục gốc của project:
-```bash
-cd frontend
-npm install
-npm run dev
+cd ..
+python desktop_app.py
 ```
 
-#### 3. Truy cập ứng dụng
-Truy cập địa chỉ sau trên trình duyệt của bạn:
-👉 **[http://localhost:5173](http://localhost:5173)**
+## Build File EXE
 
----
-
-### Cách 2: Chạy bằng Docker Compose (Yêu cầu cài đặt Docker Desktop)
-Nếu bạn có Docker, bạn chỉ cần chạy duy nhất một lệnh tại thư mục gốc:
-```bash
-docker-compose up --build
+```powershell
+.\scripts\install-desktop-env.ps1
+.\scripts\build-exe.ps1
 ```
-Hệ thống sẽ tự dựng môi trường Linux chứa FFmpeg, FastAPI, và React Dev server. Truy cập cổng `5173` để sử dụng.
 
----
+Kết quả nằm trong:
 
-## 📖 Cách sử dụng ứng dụng
+```text
+dist\AutoDubVideoLocal\AutoDubVideoLocal.exe
+```
 
-1. **Upload Video**: Kéo thả hoặc click chọn file video của bạn (`.mp4`, `.mov`, `.mkv`).
-2. **Chọn chế độ xử lý (Mode)**:
-   * **Mode A (Full Auto)**: Video đầu vào tự động được trích âm thanh -> Transcribe bằng Whisper -> Dịch phụ đề sang Tiếng Việt -> Tạo voice TTS -> Render video final.
-   * **Mode B (Use Vietnamese Subtitle)**: Người dùng upload Video + file phụ đề tiếng Việt (`vi.srt`). Hệ thống bỏ qua bước dịch và khớp chính xác giọng TTS theo SRT để render video final.
-   * **Mode C (Use Vietnamese Script)**: Người dùng upload Video + kịch bản tiếng Việt (`script_vi.txt`). Hệ thống nói cả kịch bản ra 1 file tiếng, sau đó chạy Whisper trên file tiếng đó để tự sinh phụ đề có timestamp chuẩn, rồi render vào video final.
-3. **Cấu hình bổ sung**:
-   * **TTS Voice**: Chọn giọng đọc Hoài Mỹ (Nữ) hoặc Nam Minh (Nam).
-   * **Output Layout**: Chọn giữ nguyên tỷ lệ, cắt khung dọc 9:16 (TikTok), hoặc scale 9:16 kèm làm mờ 2 bên viền (Blur background).
-   * **Style phụ đề**: Điều chỉnh kích thước font chữ, khoảng cách viền dưới (margin bottom), độ dày outline, và độ dài tối đa mỗi dòng.
-4. **Bắt đầu pipeline**: Click **Process Video Dub** và theo dõi log chạy trực tiếp trên màn hình Console.
-5. **Download kết quả**: Tải video final, file phụ đề `.srt`, file lồng tiếng riêng lẻ `.wav` hoặc kịch bản JSON.
+Khuyến nghị dùng `--onedir` thay vì `--onefile` vì PyTorch, WhisperX và Demucs có nhiều dependency lớn.
 
----
+## Cấu Hình Dịch
 
-## 🔀 Tùy chỉnh API dịch thuật trong `translate.py`
-
-Tệp dịch thuật cốt lõi nằm ở [translate.py](file:///d:/Du-an/Tiktok%20Automation/auto-dub-video-local/backend/app/pipeline/translate.py). Để cấu hình dịch thuật, bạn có thể chỉnh sửa file `.env` ở thư mục `backend/`:
+Tạo file `.env` trong `backend/` hoặc `%LOCALAPPDATA%\AutoDubVideoLocal\.env`.
 
 ```env
-# Options: mock, ollama, openai_compatible
-TRANSLATOR_PROVIDER=mock
+TRANSLATOR_PROVIDER=openai_compatible
+OPENAI_API_KEY=your-api-key
+OPENAI_BASE_URL=https://api.openai.com/v1
+OPENAI_MODEL=gpt-4o-mini
 ```
 
-### Các Option Dịch Thuật:
+Các provider hiện có:
 
-1. **Mock (Mặc định)**:
-   * Giữ nguyên ngôn ngữ gốc (Dùng để test pipeline không cần internet/máy chủ dịch).
-2. **OpenAI-Compatible (Gọi API dịch của GPT-4, Groq, OpenRouter, DeepSeek)**:
-   * Chỉnh sửa trong `.env`:
-     ```env
-     TRANSLATOR_PROVIDER=openai_compatible
-     OPENAI_API_KEY=your-api-key-here
-     OPENAI_BASE_URL=https://api.openai.com/v1   # Hoặc endpoint của Groq, DeepSeek...
-     OPENAI_MODEL=gpt-3.5-turbo                  # Tên model bạn muốn dùng
-     ```
-3. **Ollama (Dịch local miễn phí bằng LLM chạy máy của bạn)**:
-   * Chỉnh sửa trong `.env`:
-     ```env
-     TRANSLATOR_PROVIDER=ollama
-     OLLAMA_BASE_URL=http://localhost:11434
-     OLLAMA_MODEL=qwen2:7b                       # Tên model local đã pull về máy
-     ```
+- `mock`: giữ nguyên text, dùng để test pipeline.
+- `openai_compatible`: gọi API tương thích OpenAI, dễ deploy nhất.
+- `ollama`: chạy local LLM qua Ollama, phù hợp offline nhưng nặng hơn.
 
-### Nơi chỉnh sửa Code / Prompt Dịch Thuật:
-Nếu bạn muốn đổi prompt dịch hoặc tích hợp một API dịch tùy chỉnh (ví dụ: Google Translate miễn phí hay API dịch chuyên dụng):
-* Mở tệp [translate.py](file:///d:/Du-an/Tiktok%20Automation/auto-dub-video-local/backend/app/pipeline/translate.py).
-* Thay đổi Prompt tại dòng:
-  ```python
-  prompt = f"Dịch và viết lại câu sau sang tiếng Việt tự nhiên, ngắn gọn, hợp video TikTok. Không giải thích, chỉ trả về câu tiếng Việt. Giữ ý chính, tránh câu quá dài. Câu gốc: {text}"
-  ```
-* Để viết thêm Provider mới: Tạo class kế thừa từ `BaseTranslator`, ghi đè hàm `translate(self, text, job_id)` và đăng ký class đó trong hàm `get_translator()`.
+Ví dụ Ollama:
+
+```env
+TRANSLATOR_PROVIDER=ollama
+OLLAMA_BASE_URL=http://localhost:11434
+OLLAMA_MODEL=qwen2.5:7b-instruct
+```
+
+## Logging Và Debug
+
+Ứng dụng có 2 lớp log:
+
+- App log: `%LOCALAPPDATA%\AutoDubVideoLocal\logs\app.log`
+- Job log: `storage\jobs\<job_id>\logs.txt`
+
+Trong giao diện desktop, panel Logs hiển thị realtime các dòng từ job đang chạy. Nút Diagnostics cho biết trạng thái FFmpeg, đường dẫn storage, cache, bin và cấu hình model hiện tại.
+
+## Ghi Chú Deploy
+
+- Node.js không còn cần cho runtime.
+- FFmpeg nên được bundle trong `backend/bin` trước khi build.
+- Không nên nhét model Ollama/Whisper/Demucs lớn vào `.exe`; nên để app tải/cache ở lần chạy đầu.
+- Nếu muốn bản nhẹ để test, tắt audio separation và dùng `openai_compatible` thay vì Ollama local.

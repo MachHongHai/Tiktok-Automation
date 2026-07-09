@@ -1,7 +1,7 @@
 import os
 import subprocess
-from app.job_store import log_to_job
-from app.models import SubtitleStyle
+from app.services.job_store import log_to_job
+from app.schemas.job import SubtitleStyle
 
 def render_video(
     video_path: str,

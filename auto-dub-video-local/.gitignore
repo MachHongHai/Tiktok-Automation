@@ -1,8 +1,6 @@
-# ==========================================
-# GITIGNORE CHO DỰ ÁN TIKTOK AUTOMATION DUBBING
-# ==========================================
+# Auto Dub Video Local Desktop ignore rules
 
-# --- Virtual Environments (Môi trường ảo Python) ---
+# Python virtual environments
 backend/.venv/
 .venv/
 venv/
@@ -10,22 +8,23 @@ env/
 ENV/
 python/
 
-# --- Dependency Folders (Thư viện Node.js) ---
+# Legacy Node folders, if any remain locally
 node_modules/
 frontend/node_modules/
 package-lock.json
 yarn.lock
 pnpm-lock.yaml
 
-# --- Cache Folders (Dữ liệu cache mô hình AI cực nặng) ---
+# AI and tool caches
 backend/.cache/
 .cache/
 **/.cache/
 .pytest_cache/
 .ipynb_checkpoints/
 
-# --- Large Binaries (Các file thực thi lớn như FFmpeg, Ollama) ---
+# Large binaries
 backend/bin/
+runtime/bin/
 **/bin/*.exe
 **/bin/ollama/
 *.exe
@@ -33,31 +32,32 @@ backend/bin/
 *.dylib
 *.so
 
-# --- User Data & Temporary Working Files (Bộ nhớ lưu trữ video/audio) ---
+# User data and temporary media
 storage/
 backend/temp/
 **/temp/
 *.log
 
-# --- Build Artifacts (Thư mục build frontend) ---
+# Build artifacts
 frontend/dist/
 dist/
 build/
 out/
+AutoDubVideoLocal.spec
 
-# --- Environment Configurations (Thông tin bảo mật cấu hình) ---
+# Environment configs
 backend/.env
 frontend/.env
 .env
 .env*.local
 
-# --- Python Bytecode & Runtime ---
+# Python bytecode and runtime
 __pycache__/
 **/*.pyc
 **/*.pyo
 **/*.pyd
 
-# --- IDEs / Editors (Cấu hình bộ soạn thảo) ---
+# IDEs and editors
 .vscode/
 .idea/
 *.suo
@@ -66,7 +66,7 @@ __pycache__/
 *.sln
 *.swp
 
-# --- OS Specific Files (Hệ điều hành) ---
+# OS files
 .DS_Store
 Thumbs.db
 desktop.ini

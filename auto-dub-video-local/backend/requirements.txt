@@ -1,6 +1,3 @@
-fastapi
-uvicorn[standard]
-python-multipart
 pydantic
 git+https://github.com/m-bain/whisperX.git
 torch
@@ -12,5 +9,5 @@ python-dotenv
 requests
 audioop-lts
 demucs
-
+pyinstaller
 

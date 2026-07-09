@@ -3,7 +3,8 @@ import json
 from datetime import datetime, timezone
 from typing import List, Optional
 from app.config import JOBS_DIR
-from app.models import JobInfo, JobConfig
+from app.core.events import emit_log
+from app.schemas.job import JobInfo, JobConfig
 
 def get_job_dir(job_id: str) -> str:
     return os.path.join(JOBS_DIR, job_id)
@@ -14,7 +15,7 @@ def get_job_json_path(job_id: str) -> str:
 def get_job_logs_path(job_id: str) -> str:
     return os.path.join(get_job_dir(job_id), "logs.txt")
 
-def create_job(job_id: str, original_filename: str, config: JobConfig) -> JobInfo:
+def create_job(job_id: str, original_filename: str, config: JobConfig, video_ext: str = ".mp4") -> JobInfo:
     job_dir = get_job_dir(job_id)
     os.makedirs(job_dir, exist_ok=True)
     os.makedirs(os.path.join(job_dir, "input"), exist_ok=True)
@@ -25,7 +26,7 @@ def create_job(job_id: str, original_filename: str, config: JobConfig) -> JobInf
     now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     
     files = {
-        "video_input": os.path.join(job_dir, "input", "video.mp4"),
+        "video_input": os.path.join(job_dir, "input", f"video{video_ext}"),
         "srt_input": None,
         "script_input": None,
         "final_video": os.path.join(job_dir, "output", "final.mp4"),
@@ -107,8 +108,10 @@ def log_to_job(job_id: str, message: str):
     log_path = get_job_logs_path(job_id)
     now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     os.makedirs(os.path.dirname(log_path), exist_ok=True)
+    line = f"[{now}] {message}"
     with open(log_path, "a", encoding="utf-8") as f:
-        f.write(f"[{now}] {message}\n")
+        f.write(f"{line}\n")
+    emit_log(job_id, line)
 
 def delete_job(job_id: str) -> bool:
     import shutil
@@ -117,4 +120,3 @@ def delete_job(job_id: str) -> bool:
         shutil.rmtree(job_dir)
         return True
     return False
-

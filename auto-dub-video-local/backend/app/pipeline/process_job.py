@@ -1,75 +1,17 @@
 import os
 import json
 import traceback
-import subprocess
-import requests
-import time
-from app.job_store import update_job, log_to_job, get_job
+from app.services.job_store import update_job, log_to_job, get_job
 from app.pipeline.extract_audio import extract_audio
 from app.pipeline.transcribe import transcribe
-from app.pipeline.translate import translate_segments
+from app.services.translation import translate_segments
 from app.pipeline.subtitle import generate_srt, parse_srt_to_segments
 from app.pipeline.tts import generate_voice_parts, generate_single_voice
 from app.pipeline.audio_timeline import build_audio_timeline, convert_to_wav, mix_accompaniment_and_voice
 from app.pipeline.audio_separation import separate_audio
 from app.pipeline.render import render_video
 from app.pipeline.job_manager import start_job, check_cancellation, clean_job
-
-def ensure_ollama_running(job_id: str):
-    """Checks if Ollama server is running. If not, automatically starts it in the background using the project binary."""
-    from app.config import OLLAMA_BASE_URL, BASE_DIR, TRANSLATOR_PROVIDER
-    
-    if TRANSLATOR_PROVIDER != "ollama":
-        return
-        
-    try:
-        response = requests.get(OLLAMA_BASE_URL, timeout=1.5)
-        if response.status_code == 200:
-            log_to_job(job_id, "Ollama server is already running.")
-            return
-    except Exception:
-        log_to_job(job_id, "Ollama server is not running. Attempting to start it automatically...")
-        
-    ollama_exe = os.path.join(BASE_DIR, "bin", "ollama", "ollama.exe")
-    if not os.path.exists(ollama_exe):
-        log_to_job(job_id, f"WARNING: Local Ollama binary not found at {ollama_exe}. Cannot auto-start.")
-        return
-        
-    # Configure env to save models in the D drive cache
-    ollama_env = os.environ.copy()
-    models_dir = os.path.abspath(os.path.join(BASE_DIR, ".cache", "ollama", "models"))
-    os.makedirs(models_dir, exist_ok=True)
-    ollama_env["OLLAMA_MODELS"] = models_dir
-    
-    try:
-        creation_flags = 0
-        if os.name == 'nt':
-            # DETACHED_PROCESS = 0x00000008, CREATE_NEW_PROCESS_GROUP = 0x00000200
-            creation_flags = 0x00000008 | 0x00000200
-            
-        subprocess.Popen(
-            [ollama_exe, "serve"],
-            creationflags=creation_flags,
-            env=ollama_env,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            close_fds=True
-        )
-        log_to_job(job_id, "Ollama server process spawned. Waiting for initialization...")
-        
-        # Wait up to 10 seconds for the port to open
-        for _ in range(10):
-            time.sleep(1)
-            try:
-                response = requests.get(OLLAMA_BASE_URL, timeout=1.0)
-                if response.status_code == 200:
-                    log_to_job(job_id, "Ollama server initialized and running successfully.")
-                    return
-            except Exception:
-                pass
-        log_to_job(job_id, "WARNING: Spawned Ollama server but it did not respond in 10 seconds.")
-    except Exception as e:
-        log_to_job(job_id, f"ERROR: Failed to automatically start Ollama server: {str(e)}")
+from app.services.ollama_runtime import ensure_ollama_running
 
 def process_job_sync(job_id: str):
     """Processes a video dubbing job from start to finish depending on its mode."""
