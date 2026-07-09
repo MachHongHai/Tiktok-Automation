@@ -1,6 +1,6 @@
 $ErrorActionPreference = "Stop"
 $Root = Split-Path -Parent $PSScriptRoot
-$Python = Join-Path $Root "backend\.venv\Scripts\python.exe"
+$Python = Join-Path $Root ".venv\Scripts\python.exe"
 
 if (!(Test-Path $Python)) {
   $Python = "python"
@@ -13,11 +13,42 @@ $ArgsList = @(
   "--windowed",
   "--onedir",
   "--name", "AutoDubVideoLocal",
-  "--paths", (Join-Path $Root "backend"),
-  (Join-Path $Root "desktop_app.py")
+  "--paths", (Join-Path $Root "src"),
+  (Join-Path $Root "autodub_desktop.py")
 )
 
-$BinPath = Join-Path $Root "backend\bin"
+$ExcludedModules = @(
+  "bokeh",
+  "cupy",
+  "dash",
+  "dask",
+  "distributed",
+  "django",
+  "flask",
+  "IPython",
+  "ipywidgets",
+  "jupyter",
+  "jupyterlab",
+  "matplotlib",
+  "notebook",
+  "pandas",
+  "plotly",
+  "pytest",
+  "sklearn",
+  "sqlalchemy",
+  "tensorboard",
+  "tensorflow",
+  "torch.utils.tensorboard",
+  "torchvision",
+  "tornado",
+  "yt_dlp"
+)
+
+foreach ($Module in $ExcludedModules) {
+  $ArgsList += @("--exclude-module", $Module)
+}
+
+$BinPath = Join-Path $Root "runtime\bin"
 if (Test-Path $BinPath) {
   $ArgsList += @("--add-data", "$BinPath;bin")
 }

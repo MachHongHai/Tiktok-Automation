@@ -11,7 +11,7 @@
 ## Tối Ưu Đóng Gói EXE
 
 - Dùng PyInstaller `--onedir`.
-- Bundle FFmpeg trong `backend/bin`.
+- Bundle FFmpeg trong `runtime/bin`.
 - Không bundle model lớn vào executable.
 - Lưu dữ liệu runtime trong `%LOCALAPPDATA%\AutoDubVideoLocal`.
 - Tách bản Light và bản Offline:

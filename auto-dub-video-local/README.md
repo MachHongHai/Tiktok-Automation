@@ -2,37 +2,34 @@
 
 Ứng dụng desktop Windows để tự động lồng tiếng và chèn phụ đề tiếng Việt cho video.
 
-Pipeline chính:
-
 ```text
-Import video -> tách audio -> nhận dạng giọng nói -> dịch phụ đề -> tạo giọng TTS -> đồng bộ timeline -> render video
+Import video -> tách audio -> nhận dạng giọng nói -> dịch phụ đề -> tạo TTS -> đồng bộ timeline -> render video
 ```
 
-Ứng dụng hiện chạy bằng giao diện desktop Python, không cần Node.js, React, Vite hoặc trình duyệt để sử dụng.
+Ứng dụng chạy bằng Python desktop GUI, không cần Node.js, React, Vite, FastAPI hoặc trình duyệt.
 
 ## Cấu Trúc Dự Án
 
 ```text
 auto-dub-video-local/
-  desktop_app.py              Entry point chạy desktop app
-  backend/
-    app/
-      desktop/                Giao diện desktop tkinter/ttk
-      core/                   Runtime path, logging, event nội bộ
-      schemas/                Pydantic models
-      services/               Job store, dịch thuật, Ollama runtime
-      pipeline/               Các bước xử lý video/audio/subtitle/TTS
-      utils/                  Helper FFmpeg, timecode, file
-    requirements.txt
-  scripts/
-    install-desktop-env.ps1   Tạo venv và cài dependency
-    run-desktop.ps1           Chạy app desktop từ source
-    build-exe.ps1             Build file .exe bằng PyInstaller
-  docs/
+  autodub_desktop.py          Entry point chạy app desktop
+  src/autodub/                Source package chính
+    desktop/                  GUI tkinter/ttk
+    core/                     Runtime path, logging, event nội bộ
+    schemas/                  Pydantic models
+    services/                 Job store, translation, Ollama runtime
+    pipeline/                 Audio/video/STT/TTS/render pipeline
+    utils/                    FFmpeg, timecode, file helpers
+  runtime/bin/                FFmpeg, FFprobe, Ollama binaries
+  scripts/                    Script cài, chạy, build, test
+  requirements.txt            Python dependencies
+  .env                        Cấu hình local
+  .venv/                      Virtual environment local
+  .cache/                     Model/cache local
   storage/                    Job output khi chạy từ source
 ```
 
-Khi chạy từ file `.exe`, dữ liệu người dùng sẽ nằm trong:
+Khi chạy từ `.exe`, dữ liệu người dùng mặc định nằm trong:
 
 ```text
 %LOCALAPPDATA%\AutoDubVideoLocal\
@@ -41,84 +38,65 @@ Khi chạy từ file `.exe`, dữ liệu người dùng sẽ nằm trong:
   .cache\
 ```
 
-## Cài Đặt Chạy Từ Source
+## Chạy Từ Source
 
 Yêu cầu:
 
 - Windows 10/11
 - Python 3.10+
-- FFmpeg và FFprobe, hoặc đặt binary trong `backend/bin`
-
-Chạy:
+- FFmpeg/FFprobe trong `runtime/bin`
 
 ```powershell
 .\scripts\install-desktop-env.ps1
 .\scripts\run-desktop.ps1
 ```
 
-Nếu không dùng script:
+Chạy trực tiếp:
 
 ```powershell
-cd backend
-python -m venv .venv
-.\.venv\Scripts\activate
-pip install -r requirements.txt
-cd ..
-python desktop_app.py
+.\.venv\Scripts\python.exe .\autodub_desktop.py
 ```
 
-## Build File EXE
+## Build EXE
 
 ```powershell
-.\scripts\install-desktop-env.ps1
 .\scripts\build-exe.ps1
 ```
 
-Kết quả nằm trong:
+Kết quả:
 
 ```text
 dist\AutoDubVideoLocal\AutoDubVideoLocal.exe
 ```
 
-Khuyến nghị dùng `--onedir` thay vì `--onefile` vì PyTorch, WhisperX và Demucs có nhiều dependency lớn.
+Build dùng PyInstaller `--onedir` vì Torch, WhisperX và Demucs có nhiều dependency lớn. Script build đã exclude các dependency optional như Jupyter, TensorBoard, Matplotlib, Pandas, SQLAlchemy, torchvision và yt-dlp.
 
 ## Cấu Hình Dịch
 
-Tạo file `.env` trong `backend/` hoặc `%LOCALAPPDATA%\AutoDubVideoLocal\.env`.
-
-```env
-TRANSLATOR_PROVIDER=openai_compatible
-OPENAI_API_KEY=your-api-key
-OPENAI_BASE_URL=https://api.openai.com/v1
-OPENAI_MODEL=gpt-4o-mini
-```
-
-Các provider hiện có:
-
-- `mock`: giữ nguyên text, dùng để test pipeline.
-- `openai_compatible`: gọi API tương thích OpenAI, dễ deploy nhất.
-- `ollama`: chạy local LLM qua Ollama, phù hợp offline nhưng nặng hơn.
-
-Ví dụ Ollama:
+Tạo hoặc sửa file `.env` ở root dự án, hoặc `%LOCALAPPDATA%\AutoDubVideoLocal\.env`.
 
 ```env
 TRANSLATOR_PROVIDER=ollama
-OLLAMA_BASE_URL=http://localhost:11434
-OLLAMA_MODEL=qwen2.5:7b-instruct
+OLLAMA_BASE_URL=http://127.0.0.1:11435
+OLLAMA_MODEL=qwen2.5:7b
 ```
 
-## Logging Và Debug
+Provider hiện có:
 
-Ứng dụng có 2 lớp log:
+- `mock`: giữ nguyên text, dùng để test pipeline.
+- `openai_compatible`: gọi API tương thích OpenAI, dễ deploy.
+- `ollama`: chạy LLM local, offline nhưng nặng hơn.
+
+## Logging
 
 - App log: `%LOCALAPPDATA%\AutoDubVideoLocal\logs\app.log`
 - Job log: `storage\jobs\<job_id>\logs.txt`
 
-Trong giao diện desktop, panel Logs hiển thị realtime các dòng từ job đang chạy. Nút Diagnostics cho biết trạng thái FFmpeg, đường dẫn storage, cache, bin và cấu hình model hiện tại.
+Panel Logs trong GUI hiển thị realtime log của job đang chạy.
 
-## Ghi Chú Deploy
+## Ghi Chú
 
 - Node.js không còn cần cho runtime.
-- FFmpeg nên được bundle trong `backend/bin` trước khi build.
-- Không nên nhét model Ollama/Whisper/Demucs lớn vào `.exe`; nên để app tải/cache ở lần chạy đầu.
-- Nếu muốn bản nhẹ để test, tắt audio separation và dùng `openai_compatible` thay vì Ollama local.
+- Không nên nhét model lớn trực tiếp vào executable.
+- Muốn test nhanh khi sửa code: chạy `.\scripts\run-desktop.ps1`.
+- Chỉ build lại `.exe` khi muốn phát hành bản mới.

@@ -1,7 +1,6 @@
 # Auto Dub Video Local Desktop ignore rules
 
 # Python virtual environments
-backend/.venv/
 .venv/
 venv/
 env/
@@ -16,14 +15,12 @@ yarn.lock
 pnpm-lock.yaml
 
 # AI and tool caches
-backend/.cache/
 .cache/
 **/.cache/
 .pytest_cache/
 .ipynb_checkpoints/
 
 # Large binaries
-backend/bin/
 runtime/bin/
 **/bin/*.exe
 **/bin/ollama/
@@ -34,7 +31,6 @@ runtime/bin/
 
 # User data and temporary media
 storage/
-backend/temp/
 **/temp/
 *.log
 
@@ -46,10 +42,12 @@ out/
 AutoDubVideoLocal.spec
 
 # Environment configs
-backend/.env
-frontend/.env
 .env
 .env*.local
+
+# Legacy paths from the old web/backend layout
+backend/
+frontend/
 
 # Python bytecode and runtime
 __pycache__/
