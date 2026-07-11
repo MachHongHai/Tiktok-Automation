@@ -1,286 +1,176 @@
 import json
-import re
-from typing import Optional
+import os
+import subprocess
+import sys
+import tempfile
 
-import requests
-
-from autodub.config import (
-    OLLAMA_BASE_URL,
-    OLLAMA_MODEL,
-    OPENAI_API_KEY,
-    OPENAI_BASE_URL,
-    OPENAI_MODEL,
-    TRANSLATOR_PROVIDER,
-)
-from autodub.services.job_store import log_to_job
-
-BATCH_SIZE = 30
-
-SYSTEM_PROMPT = (
-    "Bạn là dịch giả phụ đề chuyên nghiệp cho video ngắn. Dịch từ tiếng Anh sang tiếng Việt tự nhiên, "
-    "đúng ngữ cảnh hội thoại, ngắn gọn và dễ đọc khi lồng tiếng.\n"
-    "Quy tắc bắt buộc:\n"
-    "1. Chỉ trả tiếng Việt, không giải thích, không ghi chú, không thêm tiếng Trung/chữ Hán.\n"
-    "2. Giữ đúng nghĩa và đúng vai nói. Ví dụ: 'Excuse me, can I ask you for some directions?' = "
-    "'Xin lỗi, cho tôi hỏi đường được không?' hoặc 'Xin lỗi, bạn chỉ đường giúp tôi được không?'. "
-    "Không được đảo nghĩa thành 'bạn muốn hỏi tôi'.\n"
-    "3. Với batch, mỗi dòng phải bắt đầu bằng số thật trong ngoặc vuông: [1], [2], [3]... "
-    "Không được viết placeholder như [số_thứ_tự].\n"
-    "4. Số dòng đầu ra phải bằng đúng số dòng đầu vào."
-)
+from autodub.core.paths import project_root
+from autodub.services.job_store import get_job_dir, log_to_job
 
 
-class BaseTranslator:
-    def translate_batch(self, texts: list[str], job_id: str) -> list[str]:
-        raise NotImplementedError()
-
-    def translate_single(self, text: str, job_id: str) -> str:
-        raise NotImplementedError()
-
-
-class MockTranslator(BaseTranslator):
-    def translate_batch(self, texts: list[str], job_id: str) -> list[str]:
-        return texts
-
-    def translate_single(self, text: str, job_id: str) -> str:
-        return text
-
-
-class OllamaTranslator(BaseTranslator):
-    def translate_single(self, text: str, job_id: str) -> str:
-        if not text.strip():
-            return ""
-
-        payload = {
-            "model": OLLAMA_MODEL,
-            "messages": [
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": f"Dịch câu sau sang tiếng Việt. Chỉ trả về bản dịch:\n\n{text}"},
-            ],
-            "options": {"temperature": 0.1},
-            "stream": False,
-        }
-        try:
-            response = requests.post(_ollama_chat_url(), json=payload, timeout=30)
-            response.raise_for_status()
-            translated = response.json().get("message", {}).get("content", "").strip()
-            return clean_translation(translated)
-        except Exception as exc:
-            log_to_job(job_id, f"Ollama single translation error: {exc}")
-            return text
-
-    def translate_batch(self, texts: list[str], job_id: str) -> list[str]:
-        if not texts:
-            return []
-
-        payload = {
-            "model": OLLAMA_MODEL,
-            "messages": [
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": _build_batch_prompt(texts)},
-            ],
-            "options": {"temperature": 0.1},
-            "stream": False,
-        }
-        try:
-            log_to_job(job_id, f"Sending batch of {len(texts)} segments to Ollama...")
-            response = requests.post(_ollama_chat_url(), json=payload, timeout=90)
-            response.raise_for_status()
-            content = response.json().get("message", {}).get("content", "").strip()
-            results = parse_batch_output(content, len(texts), job_id)
-            if results is not None:
-                return results
-            log_to_job(job_id, "Ollama batch parse failed or length mismatched. Falling back to individual translation...")
-        except Exception as exc:
-            log_to_job(job_id, f"Ollama batch translation request failed: {exc}. Falling back to individual translation...")
-
-        return [self.translate_single(text, job_id) for text in texts]
+LANGUAGE_NAMES = {
+    "vi": "Vietnamese",
+    "en": "English",
+    "zh": "Chinese",
+    "hi": "Hindi",
+    "es": "Spanish",
+    "fr": "French",
+    "ar": "Arabic",
+    "pt": "Portuguese",
+    "ru": "Russian",
+    "id": "Indonesian",
+    "de": "German",
+    "ja": "Japanese",
+    "ko": "Korean",
+    "it": "Italian",
+    "th": "Thai",
+    "fil": "Filipino",
+}
 
 
-class OpenAICompatibleTranslator(BaseTranslator):
-    def translate_single(self, text: str, job_id: str) -> str:
-        if not text.strip():
-            return ""
-
-        payload = {
-            "model": OPENAI_MODEL,
-            "messages": [
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": f"Dịch câu sau sang tiếng Việt. Chỉ trả về bản dịch:\n\n{text}"},
-            ],
-            "temperature": 0.2,
-        }
-        try:
-            response = requests.post(_openai_chat_url(), json=payload, headers=_openai_headers(), timeout=30)
-            response.raise_for_status()
-            translated = response.json()["choices"][0]["message"]["content"].strip()
-            return clean_translation(translated)
-        except Exception as exc:
-            log_to_job(job_id, f"OpenAI-compatible single translation error: {exc}")
-            return text
-
-    def translate_batch(self, texts: list[str], job_id: str) -> list[str]:
-        if not texts:
-            return []
-
-        payload = {
-            "model": OPENAI_MODEL,
-            "messages": [
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": _build_batch_prompt(texts)},
-            ],
-            "temperature": 0.2,
-        }
-        try:
-            log_to_job(job_id, f"Sending batch of {len(texts)} segments to OpenAI-compatible API...")
-            response = requests.post(_openai_chat_url(), json=payload, headers=_openai_headers(), timeout=90)
-            response.raise_for_status()
-            content = response.json()["choices"][0]["message"]["content"].strip()
-            results = parse_batch_output(content, len(texts), job_id)
-            if results is not None:
-                return results
-            log_to_job(job_id, "OpenAI-compatible batch parse failed or length mismatched. Falling back to individual translation...")
-        except Exception as exc:
-            log_to_job(job_id, f"OpenAI-compatible batch translation request failed: {exc}. Falling back to individual translation...")
-
-        return [self.translate_single(text, job_id) for text in texts]
+def language_name(language_code: str) -> str:
+    return LANGUAGE_NAMES.get(language_code, language_code or "Vietnamese")
 
 
-def clean_translation(text: str) -> str:
-    text = text.strip()
-    text = re.sub(r"\*\*", "", text)
-    text = re.sub(r"\([^)]*\)", "", text)
-    text = re.sub(r"（[^）]*）", "", text)
-    text = re.sub(r"[\u4e00-\u9fff]", "", text)
+def translate_segments(
+    input_json_path: str,
+    output_json_path: str,
+    job_id: str,
+    target_language: str = "vi",
+    source_language: str = "auto",
+    provider: str = "hymt2",
+):
+    if provider != "hymt2":
+        raise ValueError("HY-MT2 is the only supported translation provider.")
 
-    prefixes = [
-        "Dịch:",
-        "Tiếng Việt:",
-        "Dịch lại:",
-        "Bản dịch:",
-        "Dịch sang tiếng Việt:",
-    ]
-    for prefix in prefixes:
-        if text.lower().startswith(prefix.lower()):
-            text = text[len(prefix):].strip()
+    target_language_name = language_name(target_language)
+    log_to_job(job_id, f"Initializing HY-MT2 translation | target: {target_language_name}.")
+    with open(input_json_path, "r", encoding="utf-8") as file:
+        segments = json.load(file)
 
-    text = re.sub(
-        r"(?i)\b(note|translation|trans|explain|explanation|annotation|chú thích|dịch|nghĩa)\b.*?:",
-        "",
-        text,
+    source_texts = [segment["text"] for segment in segments]
+    translations = _translate_with_hymt2_worker(
+        source_texts,
+        job_id=job_id,
+        source_language=language_name(source_language),
+        target_language_name=target_language_name,
     )
-    text = text.replace('"', "").replace("'", "").replace("“", "").replace("”", "")
-    text = re.sub(r"^\s*[\[\(]?\s*số[_\s-]*thứ[_\s-]*tự\s*[\]\)]?\s*[:.\-]?\s*", "", text, flags=re.I)
-    text = re.sub(r"\s+", " ", text).strip()
-    return text if re.search(r"\w", text) else ""
-
-
-def parse_batch_output(content: str, expected_count: int, job_id: str) -> Optional[list[str]]:
-    translated_map = {}
-    indexed_pattern = re.compile(r"^\s*\**\s*[\(\[\{]?\s*(\d+)\s*[\)\]\}]?\s*[\.:\-]?\s*\**\s*(.*)$")
-
-    fallback_lines = []
-    for raw_line in content.strip().splitlines():
-        line = raw_line.strip()
-        if not line:
-            continue
-        match = indexed_pattern.match(line)
-        if match:
-            translated_map[int(match.group(1))] = match.group(2).strip()
-        else:
-            cleaned = clean_translation(line)
-            if cleaned:
-                fallback_lines.append(cleaned)
-
-    results = []
-    for index in range(1, expected_count + 1):
-        value = translated_map.get(index)
-        results.append(clean_translation(value) if value is not None else None)
-
-    if len(results) == expected_count and all(item is not None for item in results):
-        return results
-
-    # Some small local models copy the placeholder label for every line. If line count still matches,
-    # keep batch context by accepting sequential lines instead of falling back to isolated translation.
-    if not translated_map and len(fallback_lines) == expected_count:
-        log_to_job(job_id, "Batch output used non-numeric labels; accepted lines sequentially.")
-        return fallback_lines
-
-    log_to_job(job_id, f"Batch parse warning: Expected {expected_count} lines, parsed {len(translated_map)} valid lines.")
-    log_to_job(job_id, f"Raw LLM output:\n{content}")
-    return None
-
-
-def get_translator() -> BaseTranslator:
-    if TRANSLATOR_PROVIDER == "ollama":
-        return OllamaTranslator()
-    if TRANSLATOR_PROVIDER == "openai_compatible":
-        return OpenAICompatibleTranslator()
-    return MockTranslator()
-
-
-def translate_segments(input_json_path: str, output_json_path: str, job_id: str):
-    log_to_job(job_id, f"Initializing translation using provider: {TRANSLATOR_PROVIDER}...")
-
-    with open(input_json_path, "r", encoding="utf-8") as f:
-        segments = json.load(f)
-
-    translator = get_translator()
-    all_texts = [seg["text"] for seg in segments]
-    all_translated_texts = []
-    total = len(segments)
-
-    for start_idx in range(0, total, BATCH_SIZE):
-        end_idx = min(start_idx + BATCH_SIZE, total)
-        batch_texts = all_texts[start_idx:end_idx]
-
-        log_to_job(job_id, f"Translating batch [{start_idx + 1}-{end_idx}/{total}]...")
-        batch_translations = translator.translate_batch(batch_texts, job_id)
-
-        for idx, (orig, trans) in enumerate(zip(batch_texts, batch_translations), start_idx + 1):
-            if not trans or not trans.strip():
-                trans = orig
-            log_to_job(job_id, f"[{idx}/{total}] Segment translation: '{orig}' -> '{trans}'")
-
-        all_translated_texts.extend(batch_translations)
-
     translated_segments = []
-    for seg, trans_text in zip(segments, all_translated_texts):
+    total = len(segments)
+    for index, (segment, source_text, translated_text) in enumerate(
+        zip(segments, source_texts, translations),
+        start=1,
+    ):
+        translated_text = clean_translation(translated_text)
+        if is_suspicious_translation(source_text, translated_text, target_language_name):
+            log_to_job(job_id, f"[{index}/{total}] HY-MT2 output failed validation. Keeping the source subtitle.")
+            translated_text = source_text
+        log_to_job(job_id, f"[{index}/{total}] Segment translation: '{source_text}' -> '{translated_text}'")
         translated_segments.append(
             {
-                "start": seg["start"],
-                "end": seg["end"],
-                "text": trans_text if trans_text and trans_text.strip() else seg["text"],
+                "start": segment["start"],
+                "end": segment["end"],
+                "text": translated_text or source_text,
             }
         )
 
-    with open(output_json_path, "w", encoding="utf-8") as f:
-        json.dump(translated_segments, f, ensure_ascii=False, indent=2)
-
+    with open(output_json_path, "w", encoding="utf-8") as file:
+        json.dump(translated_segments, file, ensure_ascii=False, indent=2)
     log_to_job(job_id, f"Saved translated segments to: {output_json_path}")
     return translated_segments
 
 
-def _build_batch_prompt(texts: list[str]) -> str:
-    formatted_input = "\n".join(f"[{index + 1}] {text}" for index, text in enumerate(texts))
-    return (
-        "Dịch từng dòng dưới đây sang tiếng Việt.\n"
-        "BẮT BUỘC trả về đúng dạng: [1] bản dịch, [2] bản dịch, [3] bản dịch...\n"
-        "Không dùng chữ 'số_thứ_tự'. Không bỏ số. Không thêm dòng ngoài danh sách.\n\n"
-        f"{formatted_input}"
-    )
+def _translate_with_hymt2_worker(
+    texts: list[str],
+    job_id: str,
+    source_language: str,
+    target_language_name: str,
+) -> list[str]:
+    if not texts:
+        return []
+
+    temp_dir = os.path.join(get_job_dir(job_id), "temp")
+    os.makedirs(temp_dir, exist_ok=True)
+    request_handle, request_path = tempfile.mkstemp(prefix="hymt2-request-", suffix=".json", dir=temp_dir)
+    os.close(request_handle)
+    response_path = request_path.replace("-request-", "-response-")
+    try:
+        with open(request_path, "w", encoding="utf-8") as file:
+            json.dump(
+                {
+                    "texts": texts,
+                    "source_language": source_language,
+                    "target_language_name": target_language_name,
+                },
+                file,
+                ensure_ascii=False,
+            )
+
+        environment = os.environ.copy()
+        environment["PYTHONPATH"] = str(project_root() / "src") + os.pathsep + environment.get("PYTHONPATH", "")
+        command = [
+            sys.executable,
+            "-m",
+            "autodub.services.hymt2_worker",
+            "--request",
+            request_path,
+            "--response",
+            response_path,
+        ]
+        log_to_job(job_id, "Starting isolated HY-MT2 translation worker.")
+        completed = subprocess.run(
+            command,
+            cwd=str(project_root()),
+            env=environment,
+            capture_output=True,
+            text=True,
+            timeout=1800,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+        if not os.path.exists(response_path):
+            details = (completed.stderr or completed.stdout or "no worker output").strip()
+            raise RuntimeError(f"HY-MT2 worker stopped with exit code {completed.returncode}: {details[-1000:]}")
+
+        with open(response_path, "r", encoding="utf-8") as file:
+            response = json.load(file)
+        if response.get("error"):
+            raise RuntimeError(response["error"])
+        translations = response.get("translations")
+        if not isinstance(translations, list) or len(translations) != len(texts) or not all(isinstance(text, str) for text in translations):
+            raise RuntimeError("HY-MT2 worker returned an invalid translation result.")
+        log_to_job(job_id, "HY-MT2 worker completed and released its model memory.")
+        return translations
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError("HY-MT2 translation timed out after 30 minutes.") from exc
+    finally:
+        for path in (request_path, response_path):
+            try:
+                os.remove(path)
+            except FileNotFoundError:
+                pass
 
 
-def _ollama_chat_url() -> str:
-    return f"{OLLAMA_BASE_URL.rstrip('/')}/api/chat"
+def clean_translation(text: str) -> str:
+    return " ".join(text.strip().strip('"').split())
 
 
-def _openai_chat_url() -> str:
-    return f"{OPENAI_BASE_URL.rstrip('/')}/chat/completions"
+def is_suspicious_translation(source_text: str, translated_text: str, target_language_name: str) -> bool:
+    source_content = "".join(character for character in source_text if character.isalnum())
+    translated_content = "".join(character for character in translated_text if character.isalnum())
+    if source_content and not translated_content:
+        return True
+    if len(source_content) >= 35 and len(translated_content) < max(6, len(source_content) // 10):
+        return True
 
+    required_script = {
+        "Hindi": r"[\u0900-\u097f]",
+        "Arabic": r"[\u0600-\u06ff]",
+        "Russian": r"[\u0400-\u04ff]",
+        "Korean": r"[\uac00-\ud7af]",
+        "Thai": r"[\u0e00-\u0e7f]",
+    }.get(target_language_name)
+    if required_script and len(source_content) >= 12:
+        import re
 
-def _openai_headers() -> dict[str, str]:
-    headers = {"Content-Type": "application/json"}
-    if OPENAI_API_KEY:
-        headers["Authorization"] = f"Bearer {OPENAI_API_KEY}"
-    return headers
+        return re.search(required_script, translated_text) is None
+    return False

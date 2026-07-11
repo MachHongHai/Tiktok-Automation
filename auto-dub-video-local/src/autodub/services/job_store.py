@@ -34,8 +34,6 @@ def create_job(job_id: str, original_filename: str, config: JobConfig, video_ext
 
     files = {
         "video_input": os.path.join(job_dir, "input", f"video{video_ext}"),
-        "srt_input": None,
-        "script_input": None,
         "final_video": os.path.join(job_dir, "output", "final.mp4"),
         "srt_output": os.path.join(job_dir, "temp", "vi.srt"),
         "voice_output": os.path.join(job_dir, "temp", "voice_final.wav"),
@@ -48,6 +46,7 @@ def create_job(job_id: str, original_filename: str, config: JobConfig, video_ext
         mode=config.mode,
         source_language=config.source_language,
         target_language=config.target_language,
+        translator_provider=config.translator_provider,
         tts_voice=config.tts_voice,
         subtitle_style=config.subtitle_style,
         output_format=config.output_format,

@@ -34,11 +34,8 @@ def app_data_dir() -> Path:
     if override:
         return Path(override).expanduser().resolve()
 
-    if is_frozen():
-        base = os.getenv("LOCALAPPDATA") or str(Path.home() / "AppData" / "Local")
-        return Path(base) / APP_NAME
-
-    return project_root()
+    base = os.getenv("LOCALAPPDATA") or str(Path.home() / "AppData" / "Local")
+    return Path(base) / APP_NAME
 
 
 def runtime_data_dir() -> Path:
@@ -46,8 +43,13 @@ def runtime_data_dir() -> Path:
     override = os.getenv("RUNTIME_DATA_DIR")
     if override:
         path = Path(override).expanduser()
-        return path.resolve() if path.is_absolute() else (project_root() / path).resolve()
+        return path.resolve() if path.is_absolute() else (app_data_dir() / path).resolve()
     return app_data_dir() / "data"
+
+
+def legacy_runtime_data_dir() -> Path:
+    """Source-mode data directory used by versions before offline storage separation."""
+    return project_root() / "data"
 
 
 def storage_dir() -> Path:

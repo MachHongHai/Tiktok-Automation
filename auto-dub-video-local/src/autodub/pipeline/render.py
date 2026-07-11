@@ -120,6 +120,7 @@ def render_video(video_path: str, voice_wav_path: str, srt_path: str, output_pat
     cmd = [
         "ffmpeg", "-y", "-i", rel_video, "-i", rel_voice,
         "-map", "0:v:0", "-map", "1:a:0", "-vf", vf_filter,
+        "-shortest",
         "-c:v", "libx264", "-preset", "fast", "-crf", "23",
         "-c:a", "aac", "-b:a", "192k", rel_output,
     ]

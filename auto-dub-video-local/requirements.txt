@@ -1,12 +1,16 @@
+--extra-index-url https://download.pytorch.org/whl/cu128
 pydantic
-git+https://github.com/m-bain/whisperX.git
-torch
-torchaudio
+torch==2.8.0
+torchaudio==2.8.0
+torchvision==0.23.0
+whisperx==3.8.6
+pyannote-audio==4.0.7
+torchcodec==0.7.0
 edge-tts
 pydub
 srt
 python-dotenv
-requests
+transformers>=5.6.0
 audioop-lts
 demucs
 pyinstaller

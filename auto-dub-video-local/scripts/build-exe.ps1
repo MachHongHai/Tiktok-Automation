@@ -39,7 +39,6 @@ $ExcludedModules = @(
   "tensorboard",
   "tensorflow",
   "torch.utils.tensorboard",
-  "torchvision",
   "tornado",
   "yt_dlp"
 )
@@ -51,6 +50,11 @@ foreach ($Module in $ExcludedModules) {
 $BinPath = Join-Path $Root "runtime\bin"
 if (Test-Path $BinPath) {
   $ArgsList += @("--add-data", "$BinPath;bin")
+}
+
+$QmlPath = Join-Path $Root "src\autodub\desktop\qml"
+if (Test-Path $QmlPath) {
+  $ArgsList += @("--add-data", "$QmlPath;autodub\desktop\qml")
 }
 
 & $Python @ArgsList

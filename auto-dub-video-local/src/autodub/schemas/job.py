@@ -22,14 +22,15 @@ class CropSettings(BaseModel):
     bottom_percent: int = 0
 
 class JobConfig(BaseModel):
-    mode: str = "A"  # A, B, C
+    mode: str = "A"  # Desktop UI creates full-auto jobs.
     source_language: str = "auto"  # zh, en, auto
     target_language: str = "vi"
+    translator_provider: str = "hymt2"
     tts_voice: str = "vi-VN-HoaiMyNeural"
     subtitle_style: SubtitleStyle = Field(default_factory=SubtitleStyle)
     output_format: str = "keep_ratio"  # tiktok_9_16_crop, keep_ratio, blur_background_9_16
     crop: CropSettings = Field(default_factory=CropSettings)
-    enable_audio_separation: bool = True
+    enable_audio_separation: bool = False
     original_video_volume: int = 60
 
 class JobInfo(BaseModel):
@@ -38,11 +39,12 @@ class JobInfo(BaseModel):
     mode: str
     source_language: str
     target_language: str
+    translator_provider: str = "hymt2"
     tts_voice: str
     subtitle_style: SubtitleStyle
     output_format: str
     crop: CropSettings = Field(default_factory=CropSettings)
-    enable_audio_separation: bool = True
+    enable_audio_separation: bool = False
     original_video_volume: int = 60
     status: str  # pending, processing, done, failed
     progress: int = 0
