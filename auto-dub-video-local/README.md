@@ -14,7 +14,7 @@ Import video -> tách audio -> nhận dạng giọng nói -> dịch phụ đề 
 auto-dub-video-local/
   autodub_desktop.py          Entry point chạy app desktop
   src/autodub/                Source package chính
-    desktop/                  GUI tkinter/ttk
+    desktop/                  GUI PySide6 / Qt Widgets
     core/                     Runtime path, logging, event nội bộ
     schemas/                  Pydantic models
     services/                 Job store, translation, Ollama runtime
@@ -25,8 +25,7 @@ auto-dub-video-local/
   requirements.txt            Python dependencies
   .env                        Cấu hình local
   .venv/                      Virtual environment local
-  .cache/                     Model/cache local
-  storage/                    Job output khi chạy từ source
+  data/                       Runtime data: cache, models, jobs, logs
 ```
 
 Khi chạy từ `.exe`, dữ liệu người dùng mặc định nằm trong:
@@ -86,6 +85,12 @@ Provider hiện có:
 - `mock`: giữ nguyên text, dùng để test pipeline.
 - `openai_compatible`: gọi API tương thích OpenAI, dễ deploy.
 - `ollama`: chạy LLM local, offline nhưng nặng hơn.
+
+## Preview And Captions
+
+- `Edit Input Preview` opens a dedicated maximized editor window. A single blue subtitle box starts near the bottom of the video; drag inside to move it or any edge to resize it, with text scaling to match.
+- `Open Output Preview` opens the completed dubbed file in its own preview window.
+- The SRT compiler splits transcript blocks into short sequential cues, capped at two lines per cue for YouTube/TikTok-style reading.
 
 ## Logging
 

@@ -41,21 +41,26 @@ def app_data_dir() -> Path:
     return project_root()
 
 
-def storage_dir() -> Path:
-    override = os.getenv("STORAGE_DIR")
+def runtime_data_dir() -> Path:
+    """All mutable runtime data: jobs, logs, model caches, and downloaded models."""
+    override = os.getenv("RUNTIME_DATA_DIR")
     if override:
         path = Path(override).expanduser()
         return path.resolve() if path.is_absolute() else (project_root() / path).resolve()
+    return app_data_dir() / "data"
 
-    return app_data_dir() / "storage"
+
+def storage_dir() -> Path:
+    """Compatibility name for the job data directory."""
+    return runtime_data_dir() / "jobs"
 
 
 def cache_dir() -> Path:
-    return app_data_dir() / ".cache"
+    return runtime_data_dir() / "cache"
 
 
 def logs_dir() -> Path:
-    return app_data_dir() / "logs"
+    return runtime_data_dir() / "logs"
 
 
 def bin_dir() -> Path:

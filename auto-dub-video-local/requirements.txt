@@ -10,4 +10,5 @@ requests
 audioop-lts
 demucs
 pyinstaller
+PySide6-Essentials==6.11.1
 

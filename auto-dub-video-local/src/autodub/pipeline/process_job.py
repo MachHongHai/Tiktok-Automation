@@ -10,7 +10,7 @@ from autodub.pipeline.tts import generate_voice_parts, generate_single_voice
 from autodub.pipeline.audio_timeline import build_audio_timeline, convert_to_wav, mix_accompaniment_and_voice
 from autodub.pipeline.audio_separation import separate_audio
 from autodub.pipeline.render import render_video
-from autodub.pipeline.job_manager import start_job, check_cancellation, clean_job
+from autodub.pipeline.job_manager import start_job, check_cancellation, clean_job, is_cancelled
 from autodub.services.ollama_runtime import ensure_ollama_running
 
 def process_job_sync(job_id: str):
@@ -94,7 +94,7 @@ def process_job_sync(job_id: str):
             # 7. Render final video (burn subtitles + overlay voice)
             check_cancellation(job_id)
             update_job(job_id, progress=95, step="rendering")
-            render_video(video_input, voice_output, srt_output, final_video, job.output_format, job.subtitle_style, job_id)
+            render_video(video_input, voice_output, srt_output, final_video, job.output_format, job.subtitle_style, job.crop, job_id)
             
         elif job.mode == "B":
             # Mode B: Use Vietnamese Subtitle
@@ -142,7 +142,7 @@ def process_job_sync(job_id: str):
             # 4. Render final video
             check_cancellation(job_id)
             update_job(job_id, progress=90, step="rendering")
-            render_video(video_input, voice_output, srt_output, final_video, job.output_format, job.subtitle_style, job_id)
+            render_video(video_input, voice_output, srt_output, final_video, job.output_format, job.subtitle_style, job.crop, job_id)
             
         elif job.mode == "C":
             # Mode C: Use Vietnamese Script
@@ -190,7 +190,7 @@ def process_job_sync(job_id: str):
             # 5. Render final video
             check_cancellation(job_id)
             update_job(job_id, progress=90, step="rendering")
-            render_video(video_input, voice_output, srt_output, final_video, job.output_format, job.subtitle_style, job_id)
+            render_video(video_input, voice_output, srt_output, final_video, job.output_format, job.subtitle_style, job.crop, job_id)
             
         else:
             raise ValueError(f"Invalid execution mode: {job.mode}")
@@ -201,6 +201,10 @@ def process_job_sync(job_id: str):
         
     except Exception as e:
         error_msg = str(e)
+        if is_cancelled(job_id) or error_msg == "Job cancelled by user.":
+            update_job(job_id, status="cancelled", error=None, step="cancelled")
+            log_to_job(job_id, "Job cancelled by user.")
+            return
         stack_trace = traceback.format_exc()
         log_to_job(job_id, f"Execution failed: {error_msg}\n{stack_trace}")
         update_job(job_id, status="failed", error=error_msg, step="failed")

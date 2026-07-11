@@ -4,7 +4,7 @@
 
 ```text
 src/autodub/
-  desktop/      GUI và desktop worker
+  desktop/      GUI PySide6 / Qt Widgets và desktop worker
   core/         Path runtime, logging, event bus
   schemas/      Pydantic DTOs
   services/     Job store, translator providers, Ollama runtime
@@ -20,7 +20,7 @@ autodub_desktop.py
   -> autodub.desktop.ui.AutoDubDesktopApp
   -> autodub.services.desktop_jobs.create_desktop_job
   -> autodub.pipeline.process_job.process_job_sync
-  -> storage/jobs/<job_id>/
+  -> data/jobs/<job_id>/
 ```
 
 ## Runtime Paths
@@ -29,19 +29,20 @@ Source mode:
 
 ```text
 .env
-.cache/
-logs/
+data/cache/
+data/logs/
 runtime/bin/
-storage/
+data/jobs/
 ```
 
 EXE mode:
 
 ```text
-%LOCALAPPDATA%\AutoDubVideoLocal\
-  .cache/
+%LOCALAPPDATA%\AutoDubVideoLocal\data\
+  cache/
   logs/
-  storage/
+  models/ollama/
+  jobs/
 ```
 
 `runtime/bin` chứa FFmpeg, FFprobe và Ollama binaries khi chạy từ source. Khi build, thư mục này được bundle vào `_internal/bin`.
@@ -50,9 +51,13 @@ EXE mode:
 
 `services.job_store.log_to_job()` là điểm log chuẩn cho pipeline:
 
-1. Ghi vào `storage/jobs/<job_id>/logs.txt`.
+1. Ghi vào `data/jobs/<job_id>/logs.txt`.
 2. Emit qua `core.events`.
 3. GUI append realtime vào panel Logs.
+
+## Video Preview
+
+`desktop.video_preview` owns the Qt Multimedia input/output players. `PreviewEditorDialog` is a dedicated maximized editor window, so vertical videos never expand the dashboard layout. Crop zoom, pan, and the draggable subtitle position are saved with the job. FFmpeg reproduces them using a temporary positioned ASS subtitle file during render.
 
 ## PyInstaller
 
