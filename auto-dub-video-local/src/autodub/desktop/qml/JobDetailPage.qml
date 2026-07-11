@@ -14,15 +14,15 @@ ColumnLayout {
         spacing: 14
 
         AppButton {
-            Layout.preferredWidth: 82
-            text: qsTr("Back")
+            Layout.preferredWidth: 124
+            text: I18n.t("Back")
             tone: "ghost"
             onClicked: root.backToJobs()
         }
 
         PageHeader {
             Layout.fillWidth: true
-            title: controller.selectedFileName || qsTr("Job detail")
+            title: controller.selectedFileName || I18n.t("Job detail")
             subtitle: qsTr("%1  /  HY-MT2  /  %2  /  Updated %3")
                 .arg(controller.selectedTargetLanguageLabel)
                 .arg(controller.selectedOutputFormat)
@@ -50,8 +50,8 @@ ColumnLayout {
 
             Panel {
                 Layout.fillWidth: true
-                title: qsTr("Run status")
-                subtitle: qsTr("Live pipeline progress")
+                title: I18n.t("Run status")
+                subtitle: I18n.t("Live pipeline progress")
 
                 RowLayout {
                     Layout.fillWidth: true
@@ -88,51 +88,65 @@ ColumnLayout {
 
                 InfoRow {
                     Layout.fillWidth: true
-                    label: qsTr("Status")
+                    label: I18n.t("Status")
                     value: controller.selectedStatus
                 }
 
                 InfoRow {
                     Layout.fillWidth: true
-                    label: qsTr("Target")
+                    label: I18n.t("Target")
                     value: controller.selectedTargetLanguageLabel
                 }
 
                 InfoRow {
                     Layout.fillWidth: true
-                    label: qsTr("Output")
+                    label: I18n.t("Output")
                     value: controller.selectedOutputFormat
+                }
+
+                InfoRow {
+                    Layout.fillWidth: true
+                    visible: controller.selectedElapsed.length > 0
+                    label: I18n.t("Elapsed")
+                    value: controller.selectedElapsed
+                }
+
+                InfoRow {
+                    Layout.fillWidth: true
+                    visible: controller.selectedEta.length > 0
+                    label: I18n.t("Estimated remaining")
+                    value: controller.selectedEta
                 }
             }
 
             Panel {
                 Layout.fillWidth: true
                 Layout.fillHeight: true
-                title: qsTr("Actions")
+                title: I18n.t("Actions")
                 subtitle: qsTr("Preview, export and manage this job")
 
                 AppButton {
                     Layout.fillWidth: true
-                    text: qsTr("Open input preview")
-                    onClicked: controller.openInputPreview()
+                    text: I18n.t("Open input video")
+                    onClicked: controller.openInputFile()
                 }
 
                 AppButton {
                     Layout.fillWidth: true
-                    text: qsTr("Open output video")
+                    text: I18n.t("Open output video")
                     tone: "primary"
                     onClicked: controller.openOutputFile()
                 }
 
                 AppButton {
                     Layout.fillWidth: true
-                    text: qsTr("Open output folder")
+                    text: I18n.t("Open output folder")
                     onClicked: controller.openOutputFolder()
                 }
 
                 AppButton {
                     Layout.fillWidth: true
-                    text: qsTr("Open job folder")
+                    text: I18n.t("Open job folder")
                     onClicked: controller.openJobFolder()
                 }
 
@@ -142,7 +156,7 @@ ColumnLayout {
 
                 AppButton {
                     Layout.fillWidth: true
-                    text: qsTr("Delete job")
+                    text: I18n.t("Delete job")
                     tone: "danger"
                     onClicked: controller.deleteSelectedJob()
                 }
@@ -152,8 +166,8 @@ ColumnLayout {
         Panel {
             Layout.fillWidth: true
             Layout.fillHeight: true
-            title: qsTr("Activity log")
-            subtitle: qsTr("Processing output for this job")
+            title: I18n.t("Activity log")
+            subtitle: I18n.t("Processing output for this job")
 
             LogViewer {
                 Layout.fillWidth: true

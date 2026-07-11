@@ -9,8 +9,8 @@ ColumnLayout {
 
     PageHeader {
         Layout.fillWidth: true
-        title: qsTr("Create a new dub")
-        subtitle: qsTr("Turn one source video into a translated, voiced and captioned export.")
+        title: controller.projectName || I18n.t("Create a new dub")
+        subtitle: controller.projectDirectory || I18n.t("Turn one source video into a translated, voiced and captioned export.")
     }
 
     RowLayout {
@@ -19,11 +19,13 @@ ColumnLayout {
         spacing: Theme.gap
 
         Panel {
-            Layout.preferredWidth: 540
-            Layout.fillWidth: true
-            Layout.fillHeight: true
-            title: qsTr("Source media")
-            subtitle: qsTr("Input video and subtitle placement")
+            Layout.preferredWidth: 400
+            Layout.minimumWidth: 330
+            Layout.maximumWidth: 430
+            Layout.preferredHeight: 540
+            Layout.alignment: Qt.AlignTop
+            title: I18n.t("Source media")
+            subtitle: I18n.t("Input video and subtitle placement")
 
             Rectangle {
                 id: videoFrame
@@ -31,9 +33,7 @@ ColumnLayout {
                 property bool dropActive: sourceDropArea.containsDrag
 
                 Layout.fillWidth: true
-                Layout.fillHeight: true
-                Layout.minimumHeight: 190
-                Layout.maximumHeight: 300
+                Layout.preferredHeight: 260
                 radius: Theme.radius
                 color: dropActive ? "#0d1a1b" : "#090a0c"
                 border.width: 1
@@ -77,7 +77,7 @@ ColumnLayout {
 
                     Text {
                         width: parent.width
-                        text: videoFrame.dropActive ? qsTr("Drop video to import") : qsTr("Select a source video")
+                        text: videoFrame.dropActive ? I18n.t("Drop video to import") : I18n.t("Select a source video")
                         color: Theme.text
                         font.pixelSize: Theme.body
                         font.weight: Font.Medium
@@ -87,7 +87,7 @@ ColumnLayout {
 
                     Text {
                         width: parent.width
-                        text: videoFrame.dropActive ? qsTr("Release to add the source file") : qsTr("MP4, MOV or MKV")
+                        text: videoFrame.dropActive ? I18n.t("Release to add the source file") : qsTr("MP4, MOV or MKV")
                         color: Theme.textMuted
                         font.pixelSize: Theme.caption
                         horizontalAlignment: Text.AlignHCenter
@@ -132,7 +132,7 @@ ColumnLayout {
 
                     Text {
                         Layout.fillWidth: true
-                        text: controller.videoPath.length > 0 ? qsTr("Source imported") : qsTr("No source selected")
+                        text: controller.videoPath.length > 0 ? I18n.t("Source imported") : I18n.t("No source selected")
                         color: controller.videoPath.length > 0 ? Theme.success : Theme.textMuted
                         font.pixelSize: Theme.caption
                         font.weight: Font.Medium
@@ -141,7 +141,7 @@ ColumnLayout {
 
                     Text {
                         Layout.fillWidth: true
-                        text: controller.videoPath || qsTr("Choose a file to begin")
+                        text: controller.videoPath || I18n.t("Choose a file to begin")
                         color: Theme.textMuted
                         font.pixelSize: Theme.caption
                         textFormat: Text.PlainText
@@ -150,8 +150,8 @@ ColumnLayout {
                 }
 
                 AppButton {
-                    Layout.preferredWidth: 104
-                    text: controller.videoPath.length > 0 ? qsTr("Replace") : qsTr("Browse")
+                    Layout.preferredWidth: 152
+                    text: controller.videoPath.length > 0 ? I18n.t("Replace") : I18n.t("Browse")
                     onClicked: controller.browseVideo()
                 }
             }
@@ -162,7 +162,7 @@ ColumnLayout {
 
                 AppButton {
                     Layout.fillWidth: true
-                    text: qsTr("Edit subtitle frame")
+                    text: I18n.t("Edit subtitle frame")
                     enabled: controller.videoPath.length > 0
                     onClicked: controller.openInputPreview()
                 }
@@ -190,7 +190,7 @@ ColumnLayout {
 
                         Text {
                             Layout.fillWidth: true
-                            text: qsTr("Full Auto workflow")
+                            text: I18n.t("Full Auto workflow")
                             color: Theme.textMuted
                             font.pixelSize: Theme.caption
                             textFormat: Text.PlainText
@@ -202,11 +202,13 @@ ColumnLayout {
         }
 
         Panel {
-            Layout.preferredWidth: 360
-            Layout.minimumWidth: 340
-            Layout.fillHeight: true
-            title: qsTr("Dubbing setup")
-            subtitle: qsTr("Language, voice and output behavior")
+            Layout.preferredWidth: 350
+            Layout.minimumWidth: 300
+            Layout.maximumWidth: 370
+            Layout.preferredHeight: 540
+            Layout.alignment: Qt.AlignTop
+            title: I18n.t("Dubbing setup")
+            subtitle: I18n.t("Language, voice and output behavior")
 
             GridLayout {
                 Layout.fillWidth: true
@@ -215,7 +217,7 @@ ColumnLayout {
                 rowSpacing: 12
 
                 Text {
-                    text: qsTr("Source")
+                    text: I18n.t("Source")
                     color: Theme.textMuted
                     font.pixelSize: Theme.caption
                     textFormat: Text.PlainText
@@ -229,7 +231,7 @@ ColumnLayout {
                 }
 
                 Text {
-                    text: qsTr("Translate to")
+                    text: I18n.t("Translate to")
                     color: Theme.textMuted
                     font.pixelSize: Theme.caption
                     textFormat: Text.PlainText
@@ -246,7 +248,7 @@ ColumnLayout {
                 }
 
                 Text {
-                    text: qsTr("Voice")
+                    text: I18n.t("Voice")
                     color: Theme.textMuted
                     font.pixelSize: Theme.caption
                     textFormat: Text.PlainText
@@ -262,7 +264,7 @@ ColumnLayout {
                 }
 
                 Text {
-                    text: qsTr("Layout")
+                    text: I18n.t("Layout")
                     color: Theme.textMuted
                     font.pixelSize: Theme.caption
                     textFormat: Text.PlainText
@@ -297,7 +299,7 @@ ColumnLayout {
 
             AppCheckBox {
                 Layout.fillWidth: true
-                text: qsTr("Separate vocals for music or noisy audio")
+                text: I18n.t("Separate vocals for music or noisy audio")
                 checked: controller.enableAudioSeparation
                 onToggled: controller.enableAudioSeparation = checked
             }
@@ -311,7 +313,7 @@ ColumnLayout {
 
                     Text {
                         Layout.fillWidth: true
-                        text: qsTr("Original audio")
+                        text: I18n.t("Original audio")
                         color: Theme.textMuted
                         font.pixelSize: Theme.caption
                         textFormat: Text.PlainText
@@ -342,10 +344,25 @@ ColumnLayout {
 
             AppButton {
                 Layout.fillWidth: true
-                text: controller.isProcessing ? qsTr("A job is already processing") : qsTr("Create and process")
+                text: controller.isProcessing ? qsTr("A job is already processing") : I18n.t("Create and process")
                 tone: "primary"
                 enabled: !controller.isProcessing && controller.videoPath.length > 0
-                onClicked: controller.startJob()
+                onClicked: controller.startProjectJob()
+            }
+        }
+
+        Panel {
+            Layout.fillWidth: true
+            Layout.fillHeight: true
+            Layout.minimumWidth: 220
+            title: I18n.t("Activity log")
+            subtitle: controller.selectedTitle || I18n.t("Live processing output")
+
+            LogViewer {
+                Layout.fillWidth: true
+                Layout.fillHeight: true
+                text: controller.logs
+                emptyText: qsTr("Logs will appear here while a job is processing.")
             }
         }
     }
@@ -371,8 +388,8 @@ ColumnLayout {
                         text: controller.isProcessing
                               ? controller.processingText
                               : controller.selectedProgress >= 100
-                                ? qsTr("Last export ready")
-                                : qsTr("No active job")
+                              ? I18n.t("Last export ready")
+                                : I18n.t("No active job")
                         color: Theme.text
                         font.pixelSize: Theme.h2
                         font.weight: Font.Medium
@@ -387,11 +404,27 @@ ColumnLayout {
                         font.weight: Font.Medium
                         textFormat: Text.PlainText
                     }
+
+                    Text {
+                        visible: controller.selectedElapsed.length > 0
+                        text: qsTr("Elapsed %1").arg(controller.selectedElapsed)
+                        color: Theme.textMuted
+                        font.pixelSize: Theme.caption
+                        textFormat: Text.PlainText
+                    }
+
+                    Text {
+                        visible: controller.selectedEta.length > 0
+                        text: qsTr("ETA %1").arg(controller.selectedEta)
+                        color: Theme.textMuted
+                        font.pixelSize: Theme.caption
+                        textFormat: Text.PlainText
+                    }
                 }
 
                 Text {
                     Layout.fillWidth: true
-                    text: controller.selectedTitle || qsTr("Processing status will appear here")
+                    text: controller.selectedStep || I18n.t("Processing status will appear here")
                     color: Theme.textMuted
                     font.pixelSize: Theme.caption
                     textFormat: Text.PlainText
@@ -406,15 +439,15 @@ ColumnLayout {
 
             AppButton {
                 Layout.preferredWidth: 108
-                text: qsTr("Stop")
+                text: I18n.t("Stop")
                 tone: "danger"
                 enabled: controller.isProcessing
                 onClicked: controller.stopJob()
             }
 
             AppButton {
-                Layout.preferredWidth: 124
-                text: qsTr("Open output")
+                Layout.preferredWidth: 164
+                text: I18n.t("Open output")
                 enabled: controller.selectedOutputPath.length > 0
                 onClicked: controller.openOutputFile()
             }

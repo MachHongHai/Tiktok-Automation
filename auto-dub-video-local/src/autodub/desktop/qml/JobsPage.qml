@@ -12,11 +12,11 @@ ColumnLayout {
 
     PageHeader {
         Layout.fillWidth: true
-        title: qsTr("Job library")
-        subtitle: qsTr("Review every run, inspect progress and reopen finished exports.")
+        title: I18n.t("Job library")
+        subtitle: I18n.t("Review every run, inspect progress and reopen finished exports.")
 
         AppButton {
-            text: qsTr("Refresh")
+            text: I18n.t("Refresh")
             onClicked: controller.refreshJobs()
         }
     }
@@ -24,8 +24,8 @@ ColumnLayout {
     Panel {
         Layout.fillWidth: true
         Layout.fillHeight: true
-        title: qsTr("Recent jobs")
-        subtitle: qsTr("Newest activity appears first")
+        title: I18n.t("Recent jobs")
+        subtitle: I18n.t("Newest activity appears first")
 
         ListView {
             id: list

@@ -15,12 +15,15 @@ Window {
     color: Theme.window
 
     property real videoRatio: Math.max(0.1, controller.previewAspectRatio)
+    property bool showPoster: false
 
     onClosing: player.stop()
 
     function openFromController() {
         player.stop()
+        player.source = ""
         player.source = controller.previewSource
+        showPoster = controller.previewPosterSource.length > 0
         subtitleBox.resetFromController()
         visible = true
         raise()
@@ -96,6 +99,7 @@ Window {
                     if (player.playbackState === MediaPlayer.PlayingState) {
                         player.pause()
                     } else {
+                        root.showPoster = false
                         player.play()
                     }
                 }
@@ -129,6 +133,17 @@ Window {
                     id: videoOutput
                     anchors.fill: parent
                     fillMode: VideoOutput.Stretch
+                }
+
+                Image {
+                    id: posterFrame
+                    anchors.fill: parent
+                    source: controller.previewPosterSource
+                    sourceSize.width: Math.round(contentArea.width)
+                    sourceSize.height: Math.round(contentArea.height)
+                    fillMode: Image.PreserveAspectFit
+                    asynchronous: true
+                    visible: root.showPoster && status === Image.Ready
                 }
 
                 SubtitleEditBox {
@@ -168,7 +183,10 @@ Window {
                     from: 0
                     to: Math.max(1, player.duration)
                     value: player.position
-                    onMoved: player.position = value
+                    onMoved: {
+                        root.showPoster = false
+                        player.position = value
+                    }
                 }
 
                 Text {

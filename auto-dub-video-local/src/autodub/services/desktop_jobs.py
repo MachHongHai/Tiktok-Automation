@@ -9,7 +9,7 @@ from autodub.services import job_store
 SUPPORTED_VIDEO_EXTENSIONS = {".mp4", ".mov", ".mkv"}
 
 
-def create_desktop_job(video_path: str, config: JobConfig):
+def create_desktop_job(video_path: str, config: JobConfig, project_name: str = "", project_directory: str = ""):
     ext = os.path.splitext(video_path)[1].lower()
     if ext not in SUPPORTED_VIDEO_EXTENSIONS:
         supported = ", ".join(sorted(SUPPORTED_VIDEO_EXTENSIONS))
@@ -17,8 +17,22 @@ def create_desktop_job(video_path: str, config: JobConfig):
     if config.mode != "A":
         raise ValueError("Only full-auto jobs are supported.")
 
+    project_name = project_name.strip()
+    project_directory = project_directory.strip()
+    if project_directory and not project_name:
+        raise ValueError("Enter a project name before choosing an output folder.")
+
     job_id = str(uuid.uuid4())
+    if project_directory:
+        config.project_name = project_name
+        config.project_directory = os.path.abspath(project_directory)
     job_info = job_store.create_job(job_id, os.path.basename(video_path), config, video_ext=ext)
+
+    if project_directory:
+        safe_project = "".join(character if character.isalnum() or character in {"-", "_", " "} else "_" for character in project_name).strip()
+        project_output_dir = os.path.join(os.path.abspath(project_directory), safe_project or "project")
+        os.makedirs(project_output_dir, exist_ok=True)
+        job_info.files["final_video"] = os.path.join(project_output_dir, "dubbed_video.mp4")
 
     shutil.copyfile(video_path, job_info.files["video_input"])
 

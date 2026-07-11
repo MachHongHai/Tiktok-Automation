@@ -11,18 +11,33 @@ ApplicationWindow {
     minimumWidth: 1160
     minimumHeight: 760
     visible: true
-    title: qsTr("Auto Dub Studio")
+    visibility: Window.Maximized
+    title: qsTr("Video Dubbing")
     color: Theme.window
 
     property int pageIndex: 0
     property int detailReturnPage: 2
-    readonly property string pageTitle: pageIndex === 0 ? qsTr("Create")
-        : pageIndex === 1 ? qsTr("Batch")
-        : pageIndex === 2 ? qsTr("Jobs")
-        : qsTr("Job Detail")
+    readonly property string pageTitle: pageIndex === 0 ? I18n.t("Projects")
+        : pageIndex === 1 ? I18n.t("Batch")
+        : pageIndex === 2 ? I18n.t("Jobs")
+        : pageIndex === 3 ? I18n.t("Job Detail")
+        : I18n.t("Workspace")
+
+    Component.onCompleted: {
+        Theme.darkMode = controller.settingsTheme === "dark"
+        I18n.language = controller.settingsLanguage
+    }
 
     PreviewWindow {
         id: previewWindow
+    }
+
+    ProjectSetupDialog {
+        id: projectSetupDialog
+    }
+
+    SettingsDialog {
+        id: settingsDialog
     }
 
     Connections {
@@ -34,6 +49,15 @@ ApplicationWindow {
 
         function onJobDeleted() {
             root.pageIndex = root.detailReturnPage
+        }
+
+        function onSettingsChanged() {
+            Theme.darkMode = controller.settingsTheme === "dark"
+            I18n.language = controller.settingsLanguage
+        }
+
+        function onProjectPrepared() {
+            root.pageIndex = 4
         }
     }
 
@@ -51,58 +75,11 @@ ApplicationWindow {
                 anchors.margins: 16
                 spacing: 12
 
-                RowLayout {
-                    Layout.fillWidth: true
-                    Layout.preferredHeight: 54
-                    spacing: 11
-
-                    Rectangle {
-                        Layout.preferredWidth: 38
-                        Layout.preferredHeight: 38
-                        radius: 8
-                        color: Theme.interactive
-
-                        Text {
-                            anchors.centerIn: parent
-                            text: "AD"
-                            color: Theme.sidebar
-                            font.pixelSize: Theme.caption
-                            font.weight: Font.Bold
-                            textFormat: Text.PlainText
-                        }
-                    }
-
-                    ColumnLayout {
-                        Layout.fillWidth: true
-                        spacing: 1
-
-                        Text {
-                            Layout.fillWidth: true
-                            text: qsTr("Auto Dub")
-                            color: Theme.textOnDark
-                            font.pixelSize: Theme.h2
-                            font.weight: Font.Medium
-                            textFormat: Text.PlainText
-                            elide: Text.ElideRight
-                        }
-
-                        Text {
-                            Layout.fillWidth: true
-                            text: qsTr("PRODUCTION STUDIO")
-                            color: Theme.interactive
-                            font.pixelSize: 10
-                            font.weight: Font.DemiBold
-                            textFormat: Text.PlainText
-                            elide: Text.ElideRight
-                        }
-                    }
-                }
-
                 Text {
                     Layout.fillWidth: true
-                    Layout.topMargin: 12
+                    Layout.topMargin: 18
                     Layout.leftMargin: 8
-                    text: qsTr("WORKSPACE")
+                    text: I18n.t("WORKSPACE")
                     color: Theme.textSubtle
                     font.pixelSize: 10
                     font.weight: Font.DemiBold
@@ -111,24 +88,24 @@ ApplicationWindow {
 
                 SidebarButton {
                     Layout.fillWidth: true
-                    marker: "+"
-                    text: qsTr("Create")
-                    selected: root.pageIndex === 0
-                    onClicked: root.pageIndex = 0
+                    text: I18n.t("Projects")
+                    selected: root.pageIndex === 0 || root.pageIndex === 4
+                    onClicked: {
+                        controller.refreshJobs()
+                        root.pageIndex = 0
+                    }
                 }
 
                 SidebarButton {
                     Layout.fillWidth: true
-                    marker: "B"
-                    text: qsTr("Batch")
+                    text: I18n.t("Batch")
                     selected: root.pageIndex === 1 || (root.pageIndex === 3 && root.detailReturnPage === 1)
                     onClicked: root.pageIndex = 1
                 }
 
                 SidebarButton {
                     Layout.fillWidth: true
-                    marker: "J"
-                    text: qsTr("Jobs")
+                    text: I18n.t("Jobs")
                     selected: root.pageIndex === 2 || (root.pageIndex === 3 && root.detailReturnPage === 2)
                     onClicked: {
                         controller.refreshJobs()
@@ -138,6 +115,12 @@ ApplicationWindow {
 
                 Item {
                     Layout.fillHeight: true
+                }
+
+                SidebarButton {
+                    Layout.fillWidth: true
+                    text: I18n.t("Settings")
+                    onClicked: settingsDialog.open()
                 }
             }
         }
@@ -184,10 +167,15 @@ ApplicationWindow {
                 Layout.fillHeight: true
                 currentIndex: root.pageIndex
 
-                CreateJobPage {
+                ProjectsPage {
                     Layout.fillWidth: true
                     Layout.fillHeight: true
                     Layout.margins: 24
+                    onRequestNewProject: projectSetupDialog.open()
+                    onOpenProject: {
+                        root.detailReturnPage = 0
+                        root.pageIndex = 3
+                    }
                 }
 
                 BatchPage {
@@ -216,6 +204,13 @@ ApplicationWindow {
                     Layout.margins: 24
                     onBackToJobs: root.pageIndex = root.detailReturnPage
                 }
+
+                CreateJobPage {
+                    Layout.fillWidth: true
+                    Layout.fillHeight: true
+                    Layout.margins: 24
+                }
+
             }
         }
     }

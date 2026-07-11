@@ -11,7 +11,7 @@ from autodub.desktop.qml_controller import AutoDubController
 def main() -> None:
     configure_app_logging()
     app = QApplication(sys.argv)
-    app.setApplicationName("Auto Dub Video Local")
+    app.setApplicationName("Video Dubbing")
     controller = AutoDubController()
     engine = QQmlApplicationEngine()
     qml_dir = Path(__file__).resolve().parent / "qml"

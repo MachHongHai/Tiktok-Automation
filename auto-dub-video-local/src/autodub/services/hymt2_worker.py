@@ -6,22 +6,9 @@ from pathlib import Path
 
 def _build_prompt(
     text: str,
-    context: list[str],
-    source_language: str,
     target_language_name: str,
 ) -> str:
-    context_block = "\n".join(f"- {line}" for line in context if line.strip())
-    if context_block:
-        context_block = (
-            "Previous subtitle lines are context only. Do not include them in the result:\n"
-            f"{context_block}\n\n"
-        )
-    return (
-        f"Translate the following subtitle from {source_language} into {target_language_name}. "
-        "Preserve meaning, names, numbers, and speaker intent. Do not correct, add, or omit content. "
-        "Output only the complete translation, without quotation marks or explanation.\n\n"
-        f"{context_block}Subtitle to translate:\n{text}"
-    )
+    return f"Translate to {target_language_name}. Output only the translation:\n{text}"
 
 
 def _load_model(model_name: str):
@@ -45,20 +32,12 @@ def translate(payload: dict) -> list[str]:
     from autodub.config import HYMT2_MODEL
 
     texts = payload["texts"]
-    source_language = payload["source_language"]
-    if source_language == "auto":
-        source_language = "the detected source language"
     target_language_name = payload["target_language_name"]
     model, tokenizer, torch, device = _load_model(HYMT2_MODEL)
     translations = []
     try:
-        for index, text in enumerate(texts):
-            messages = [{"role": "user", "content": _build_prompt(
-                text,
-                texts[max(0, index - 3):index],
-                source_language,
-                target_language_name,
-            )}]
+        for text in texts:
+            messages = [{"role": "user", "content": _build_prompt(text, target_language_name)}]
             encoded = tokenizer.apply_chat_template(
                 messages,
                 add_generation_prompt=True,
@@ -74,14 +53,11 @@ def translate(payload: dict) -> list[str]:
             with torch.inference_mode():
                 generated = model.generate(
                     **encoded,
-                    do_sample=True,
-                    temperature=0.7,
-                    top_p=0.6,
-                    top_k=20,
-                    repetition_penalty=1.05,
-                    max_new_tokens=256,
+                    do_sample=False,
+                    max_new_tokens=192,
                 )
             translations.append(tokenizer.decode(generated[0][input_length:], skip_special_tokens=True).strip())
+            print(json.dumps({"event": "progress", "current": len(translations), "total": len(texts)}), flush=True)
     finally:
         del model
         gc.collect()

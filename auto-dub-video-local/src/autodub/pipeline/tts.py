@@ -1,70 +1,16 @@
 ﻿import asyncio
 import os
 import json
-import re
 import edge_tts
 from autodub.services.job_store import log_to_job
 
 def preprocess_text_for_tts(text: str) -> str:
-    """Preprocesses translation text to ensure compatibility with Edge-TTS.
-    It replaces English words that crash the vi-VN normalizer with Vietnamese equivalents or phonetics,
-    and ensures the text ends with punctuation to prevent crashes on very short phrases.
-    This is ONLY used for TTS voice synthesis (subtitles still show the original text).
-    """
+    """Normalize whitespace and punctuation without changing translated words."""
     if not text:
         return ""
-        
-    text = text.strip()
-    # Replaces common English terms with Vietnamese phonetic equivalents or translations
-    replacements = {
-        r"\bunderrated\b": "đánh giá thấp",
-        r"\boverrated\b": "đánh giá quá cao",
-        r"\bbasically\b": "cơ bản",
-        r"\bdensity\b": "mật độ",
-        r"\bđensity\b": "mật độ",
-        r"\bpocket\b": "bỏ túi",
-        r"\bsugar\b": "đường",
-        r"\bcalories\b": "calo",
-        r"\bcalorie\b": "calo",
-        r"\bdeficit\b": "thâm hụt",
-        r"\bcarb\b": "carb",
-        r"\bcarbs\b": "carb",
-        r"\bprotein\b": "prô-tê-in",
-        r"\bfit\b": "phù hợp",
-        r"\bfits\b": "phù hợp",
-        r"\bdetox\b": "thải độc",
-        r"\bdiet\b": "ăn kiêng",
-        r"\bcommencement\b": "lễ tốt nghiệp",
-        r"\buniversities\b": "trường đại học",
-        r"\buniversity\b": "trường đại học",
-        r"\bcollege\b": "đại học",
-        r"\bgraduated\b": "tốt nghiệp",
-        r"\bhonored\b": "vinh dự",
-        r"\btruth\b": "sự thật",
-        r"\btold\b": "nói",
-        r"\bblueberries\b": "việt quất",
-        r"\bwatermelon\b": "dưa hấu",
-        r"\bpineapple\b": "dứa",
-        r"\bmelon\b": "dưa",
-        r"\bgrapes\b": "nho",
-        r"\bvitamin c\b": "vitamin xê",
-        r"\bvitamin C\b": "vitamin xê",
-        r"\bS tier\b": "hạng S",
-        r"\bA tier\b": "hạng A",
-        r"\bB tier\b": "hạng B",
-        r"\bC tier\b": "hạng C",
-        r"\bF tier\b": "hạng F",
-        r"\bs-tier\b": "hạng S",
-        r"\ba-tier\b": "hạng A",
-        r"\bb-tier\b": "hạng B",
-        r"\bc-tier\b": "hạng C",
-        r"\bf-tier\b": "hạng F",
-    }
-    
-    for pattern, repl in replacements.items():
-        text = re.sub(pattern, repl, text, flags=re.IGNORECASE)
-        
-    # Ensure it ends with a punctuation (., !, ?) to prevent Edge-TTS failure on very short texts
+    text = " ".join(text.split())
+
+    # A terminal pause helps Edge TTS pronounce short fragments naturally.
     if text and text[-1] not in ('.', '!', '?', ',', ';', ':', '...'):
         text += "."
         
@@ -84,7 +30,7 @@ async def tts_segment_with_retry(text: str, voice: str, output_path: str, retrie
             # Exponential backoff
             await asyncio.sleep(1.5 * (attempt + 1))
 
-def generate_voice_parts(segments_json_path: str, voice_parts_dir: str, voice: str, job_id: str):
+def generate_voice_parts(segments_json_path: str, voice_parts_dir: str, voice: str, job_id: str, progress_callback=None):
     """Translates a JSON segments file into individual voice MP3 files."""
     log_to_job(job_id, f"Starting voice parts generation with voice '{voice}'...")
     
@@ -100,6 +46,8 @@ def generate_voice_parts(segments_json_path: str, voice_parts_dir: str, voice: s
             if not text.strip():
                 # Write an empty file to represent silence
                 open(part_path, "wb").close()
+                if progress_callback:
+                    progress_callback(idx, total)
                 continue
                 
             try:
@@ -108,6 +56,9 @@ def generate_voice_parts(segments_json_path: str, voice_parts_dir: str, voice: s
             except Exception as tts_err:
                 log_to_job(job_id, f"[{idx}/{total}] WARNING: TTS synthesis failed for '{text}': {str(tts_err)}. Using silence fallback.")
                 open(part_path, "wb").close()
+            finally:
+                if progress_callback:
+                    progress_callback(idx, total)
             
     # Run async function using a dedicated event loop
     try:

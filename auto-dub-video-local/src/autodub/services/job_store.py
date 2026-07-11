@@ -53,6 +53,8 @@ def create_job(job_id: str, original_filename: str, config: JobConfig, video_ext
         crop=config.crop,
         enable_audio_separation=config.enable_audio_separation,
         original_video_volume=config.original_video_volume,
+        project_name=config.project_name,
+        project_directory=config.project_directory,
         status="pending",
         progress=0,
         step="pending",

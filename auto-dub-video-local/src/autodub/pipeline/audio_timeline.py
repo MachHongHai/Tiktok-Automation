@@ -1,12 +1,10 @@
 ﻿import os
 import json
 from pydub import AudioSegment
-from pydub.effects import speedup
+import subprocess
+import tempfile
 from autodub.services.job_store import log_to_job
 from autodub.utils.ffmpeg import get_video_duration
-
-# Keep dubbing intelligible while giving languages such as Japanese enough room.
-MAX_SPEED_FACTOR = 1.45
 
 def trim_silence(audio: AudioSegment, silence_threshold_db: float = -50.0) -> AudioSegment:
     """Trims leading and trailing silence from an AudioSegment to remove delay and trailing padding."""
@@ -30,6 +28,53 @@ def trim_silence(audio: AudioSegment, silence_threshold_db: float = -50.0) -> Au
     if start_trim < end_trim:
         return audio[start_trim:end_trim]
     return audio
+
+
+def _atempo_filters(speed_factor: float) -> str:
+    """Build a quality-preserving FFmpeg tempo chain for any required speed."""
+    filters = []
+    while speed_factor > 2.0:
+        filters.append("atempo=2.0")
+        speed_factor /= 2.0
+    filters.append(f"atempo={max(speed_factor, 1.0):.6f}")
+    return ",".join(filters)
+
+
+def compress_to_fit(audio: AudioSegment, max_duration_ms: int, temp_dir: str) -> AudioSegment:
+    """Tempo-compress speech without deleting its ending or changing its pitch."""
+    target_duration_ms = max(1, max_duration_ms - 20)
+    speed_factor = len(audio) / target_duration_ms
+    if speed_factor <= 1.0:
+        return audio
+
+    input_handle, input_path = tempfile.mkstemp(prefix="tempo-input-", suffix=".wav", dir=temp_dir)
+    os.close(input_handle)
+    output_handle, output_path = tempfile.mkstemp(prefix="tempo-output-", suffix=".wav", dir=temp_dir)
+    os.close(output_handle)
+    try:
+        audio.export(input_path, format="wav")
+        subprocess.run(
+            [
+                "ffmpeg", "-y", "-v", "error", "-i", input_path,
+                "-filter:a", _atempo_filters(speed_factor),
+                "-ac", "1", "-ar", "16000", output_path,
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        fitted = AudioSegment.from_file(output_path)
+        if len(fitted) > max_duration_ms:
+            raise RuntimeError(
+                f"FFmpeg tempo output is {len(fitted)}ms, exceeding its {max_duration_ms}ms slot."
+            )
+        return fitted
+    finally:
+        for path in (input_path, output_path):
+            try:
+                os.remove(path)
+            except FileNotFoundError:
+                pass
 
 def build_audio_timeline(
     segments_json_path: str,
@@ -86,7 +131,6 @@ def build_audio_timeline(
     with open(segments_json_path, "r", encoding="utf-8") as f:
         segments = json.load(f)
         
-    last_end_ms = 0
     total = len(segments)
     for idx, seg in enumerate(segments, 1):
         part_filename = f"voice_{idx:04d}.mp3"
@@ -97,9 +141,7 @@ def build_audio_timeline(
             
         start_ms = max(0, int(seg["start"] * 1000))
         
-        # Place the speech start position: it must not overlap with the previous segment's end
-        placed_start_ms = max(start_ms, last_end_ms)
-        if placed_start_ms >= video_dur_ms:
+        if start_ms >= video_dur_ms:
             log_to_job(job_id, f"[{idx}/{total}] Skipping TTS: its slot starts after the video ends.")
             continue
         
@@ -109,9 +151,10 @@ def build_audio_timeline(
         else:
             next_start_ms = video_dur_ms
             
-        # The available duration before overlapping with the next speech segment
-        slot_end_ms = min(video_dur_ms, max(placed_start_ms, next_start_ms))
-        available_dur = slot_end_ms - placed_start_ms
+        # Keep each line anchored to its original timestamp. A long translation
+        # must not push every following line later and create a cascade of cuts.
+        slot_end_ms = min(video_dur_ms, max(start_ms, next_start_ms))
+        available_dur = slot_end_ms - start_ms
         if available_dur <= 0:
             log_to_job(job_id, f"[{idx}/{total}] Skipping TTS: no available timeline slot.")
             continue
@@ -122,26 +165,18 @@ def build_audio_timeline(
             tts_segment = trim_silence(tts_segment)
             tts_dur = len(tts_segment)
             
-            # Fit every spoken part into its own subtitle slot so delays never
-            # cascade and extend the final video.
+            # Fit speech with FFmpeg's pitch-preserving atempo filter. Unlike
+            # slicing an AudioSegment, this keeps the end of every spoken line.
             if tts_dur > available_dur:
-                speed_factor = min(tts_dur / available_dur, MAX_SPEED_FACTOR)
-                    
-                log_to_job(job_id, f"[{idx}/{total}] TTS overran available gap ({available_dur}ms). Applying time-stretch at {speed_factor:.2f}x speed.")
-                try:
-                    tts_segment = speedup(tts_segment, playback_speed=speed_factor)
-                except Exception as stretch_err:
-                    log_to_job(job_id, f"[{idx}/{total}] Time-stretch failed ({str(stretch_err)}). Using original audio.")
+                speed_factor = tts_dur / available_dur
+                log_to_job(
+                    job_id,
+                    f"[{idx}/{total}] TTS overran its {available_dur}ms slot. "
+                    f"Applying pitch-preserving tempo {speed_factor:.2f}x without trimming.",
+                )
+                tts_segment = compress_to_fit(tts_segment, available_dur, voice_parts_dir)
 
-            if len(tts_segment) > available_dur:
-                clipped_ms = len(tts_segment) - available_dur
-                tts_segment = tts_segment[:available_dur]
-                log_to_job(job_id, f"[{idx}/{total}] TTS still exceeded its slot after time-stretch. Trimmed {clipped_ms}ms to preserve video duration.")
-            
-            # Record the actual end time of the current segment
-            last_end_ms = placed_start_ms + len(tts_segment)
-            
-            base_audio = base_audio.overlay(tts_segment, position=placed_start_ms)
+            base_audio = base_audio.overlay(tts_segment, position=start_ms)
         except Exception as e:
             log_to_job(job_id, f"Failed to overlay segment {idx} ({part_filename}): {str(e)}")
             

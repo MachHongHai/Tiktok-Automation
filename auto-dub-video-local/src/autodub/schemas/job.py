@@ -32,6 +32,8 @@ class JobConfig(BaseModel):
     crop: CropSettings = Field(default_factory=CropSettings)
     enable_audio_separation: bool = False
     original_video_volume: int = 60
+    project_name: str = ""
+    project_directory: str = ""
 
 class JobInfo(BaseModel):
     job_id: str
@@ -46,11 +48,18 @@ class JobInfo(BaseModel):
     crop: CropSettings = Field(default_factory=CropSettings)
     enable_audio_separation: bool = False
     original_video_volume: int = 60
+    project_name: str = ""
+    project_directory: str = ""
     status: str  # pending, processing, done, failed
     progress: int = 0
     step: str = "pending"
     created_at: str
     updated_at: str
+    started_at: Optional[str] = None
+    estimated_remaining_seconds: Optional[int] = None
+    step_detail: str = ""
+    current_item: int = 0
+    total_items: int = 0
     error: Optional[str] = None
     files: Dict[str, Optional[str]] = Field(default_factory=dict)
 

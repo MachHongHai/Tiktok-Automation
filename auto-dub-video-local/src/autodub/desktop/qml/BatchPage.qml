@@ -12,30 +12,30 @@ ColumnLayout {
 
     PageHeader {
         Layout.fillWidth: true
-        title: qsTr("Batch queue")
-        subtitle: qsTr("Process a video collection with one shared dubbing setup.")
+        title: I18n.t("Batch queue")
+        subtitle: I18n.t("Process a video collection with one shared dubbing setup.")
 
         AppButton {
-            text: qsTr("Clear")
+            text: I18n.t("Clear")
             enabled: controller.batchCount > 0 && !controller.isBatchRunning
             onClicked: controller.clearBatch()
         }
 
         AppButton {
-            text: qsTr("Add videos")
+            text: I18n.t("Add videos")
             enabled: !controller.isBatchRunning
             onClicked: controller.browseBatchVideos()
         }
 
         AppButton {
-            text: controller.isBatchRunning ? qsTr("Running queue") : qsTr("Start queue")
+            text: controller.isBatchRunning ? I18n.t("Running queue") : I18n.t("Start queue")
             tone: "primary"
             enabled: controller.batchPendingCount > 0 && !controller.isProcessing
             onClicked: controller.startBatch()
         }
 
         AppButton {
-            text: qsTr("Stop")
+            text: I18n.t("Stop")
             tone: "danger"
             enabled: controller.isBatchRunning
             onClicked: controller.stopBatch()
@@ -53,19 +53,19 @@ ColumnLayout {
 
             InfoRow {
                 Layout.preferredWidth: 150
-                label: qsTr("Videos")
+                label: I18n.t("Videos")
                 value: String(controller.batchCount)
             }
 
             InfoRow {
                 Layout.preferredWidth: 170
-                label: qsTr("Completed")
+                label: I18n.t("Completed")
                 value: qsTr("%1 / %2").arg(controller.batchCompletedCount).arg(controller.batchCount)
             }
 
             InfoRow {
                 Layout.preferredWidth: 250
-                label: qsTr("Target")
+                label: I18n.t("Target")
                 value: controller.batchTargetLanguageLabel
             }
 
@@ -78,7 +78,7 @@ ColumnLayout {
 
                     Text {
                         Layout.fillWidth: true
-                        text: controller.isBatchRunning ? qsTr("Queue processing") : qsTr("Overall progress")
+                        text: controller.isBatchRunning ? I18n.t("Queue processing") : I18n.t("Overall progress")
                         color: Theme.textMuted
                         font.pixelSize: Theme.caption
                         textFormat: Text.PlainText
@@ -104,7 +104,7 @@ ColumnLayout {
     Panel {
         Layout.fillWidth: true
         Layout.fillHeight: true
-        title: qsTr("Video jobs")
+        title: I18n.t("Video jobs")
         subtitle: qsTr("Newest additions appear at the bottom of this queue")
 
         Item {
@@ -138,7 +138,7 @@ ColumnLayout {
 
                 Text {
                     width: parent.width
-                    text: qsTr("Add videos to build a batch")
+                    text: I18n.t("Add videos to build a batch")
                     color: Theme.text
                     font.pixelSize: Theme.h2
                     font.weight: Font.Medium
@@ -148,7 +148,7 @@ ColumnLayout {
 
                 Text {
                     width: parent.width
-                    text: qsTr("Drop MP4, MOV or MKV files here")
+                    text: I18n.t("Drop MP4, MOV or MKV files here")
                     color: Theme.textMuted
                     font.pixelSize: Theme.caption
                     horizontalAlignment: Text.AlignHCenter

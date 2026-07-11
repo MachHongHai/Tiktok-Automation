@@ -1,10 +1,14 @@
 import json
 import os
+import queue
 import subprocess
 import sys
 import tempfile
+import threading
+import time
 
 from autodub.core.paths import project_root
+from autodub.pipeline.job_manager import register_process, unregister_process
 from autodub.services.job_store import get_job_dir, log_to_job
 
 
@@ -39,6 +43,7 @@ def translate_segments(
     target_language: str = "vi",
     source_language: str = "auto",
     provider: str = "hymt2",
+    progress_callback=None,
 ):
     if provider != "hymt2":
         raise ValueError("HY-MT2 is the only supported translation provider.")
@@ -54,6 +59,7 @@ def translate_segments(
         job_id=job_id,
         source_language=language_name(source_language),
         target_language_name=target_language_name,
+        progress_callback=progress_callback,
     )
     translated_segments = []
     total = len(segments)
@@ -85,6 +91,7 @@ def _translate_with_hymt2_worker(
     job_id: str,
     source_language: str,
     target_language_name: str,
+    progress_callback=None,
 ) -> list[str]:
     if not texts:
         return []
@@ -118,18 +125,49 @@ def _translate_with_hymt2_worker(
             response_path,
         ]
         log_to_job(job_id, "Starting isolated HY-MT2 translation worker.")
-        completed = subprocess.run(
+        process = subprocess.Popen(
             command,
             cwd=str(project_root()),
             env=environment,
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
             text=True,
-            timeout=1800,
+            bufsize=1,
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
+        register_process(job_id, process)
+        worker_output = []
+        output_queue = queue.Queue()
+
+        def read_output():
+            for line in process.stdout or []:
+                output_queue.put(line)
+
+        reader = threading.Thread(target=read_output, daemon=True)
+        reader.start()
+        deadline = time.monotonic() + 1800
+        try:
+            while process.poll() is None or not output_queue.empty():
+                if time.monotonic() >= deadline:
+                    process.kill()
+                    raise subprocess.TimeoutExpired(command, 1800)
+                try:
+                    line = output_queue.get(timeout=0.25)
+                except queue.Empty:
+                    continue
+                worker_output.append(line)
+                try:
+                    event = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if event.get("event") == "progress" and progress_callback:
+                    progress_callback(int(event.get("current", 0)), int(event.get("total", 0)))
+        finally:
+            reader.join(timeout=1)
+            unregister_process(job_id, process)
         if not os.path.exists(response_path):
-            details = (completed.stderr or completed.stdout or "no worker output").strip()
-            raise RuntimeError(f"HY-MT2 worker stopped with exit code {completed.returncode}: {details[-1000:]}")
+            details = "".join(worker_output).strip() or "no worker output"
+            raise RuntimeError(f"HY-MT2 worker stopped with exit code {process.returncode}: {details[-1000:]}")
 
         with open(response_path, "r", encoding="utf-8") as file:
             response = json.load(file)

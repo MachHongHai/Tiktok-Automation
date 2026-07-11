@@ -23,9 +23,9 @@ Item {
         return code
     }
 
-    function filteredOptions() {
-        var query = field.text.toLowerCase().trim()
-        if (query.length === 0 || field.text === root.labelFor(root.selectedCode)) {
+    function filteredOptions(queryText) {
+        var query = queryText.toLowerCase().trim()
+        if (query.length === 0 || queryText === root.labelFor(root.selectedCode)) {
             return options
         }
         var result = []
@@ -38,7 +38,7 @@ Item {
     }
 
     function refreshFilter() {
-        filteredModel = filteredOptions()
+        filteredModel = filteredOptions(field.text + (field.inputMethodComposing ? field.preeditText : ""))
     }
 
     onOptionsChanged: refreshFilter()
@@ -46,7 +46,6 @@ Item {
     TextField {
         id: field
         anchors.fill: parent
-        text: root.labelFor(root.selectedCode)
         placeholderText: root.placeholderText
         selectByMouse: true
         color: Theme.text
@@ -77,11 +76,19 @@ Item {
                 popup.open()
             }
         }
-        onTextEdited: {
+        onTextChanged: {
             root.refreshFilter()
             if (!popup.opened) {
                 popup.open()
             }
+        }
+        onPreeditTextChanged: root.refreshFilter()
+
+        Binding {
+            target: field
+            property: "text"
+            value: root.labelFor(root.selectedCode)
+            when: !field.activeFocus
         }
     }
 

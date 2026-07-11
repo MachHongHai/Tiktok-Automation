@@ -9,6 +9,7 @@ Button {
     property bool compact: false
 
     implicitHeight: compact ? 36 : 42
+    implicitWidth: contentItem.implicitWidth + leftPadding + rightPadding
     leftPadding: compact ? 12 : 18
     rightPadding: compact ? 12 : 18
     font.pixelSize: compact ? Theme.caption : Theme.body
@@ -26,7 +27,7 @@ Button {
         horizontalAlignment: Text.AlignHCenter
         verticalAlignment: Text.AlignVCenter
         textFormat: Text.PlainText
-        elide: Text.ElideRight
+        elide: Text.ElideNone
     }
 
     background: Rectangle {

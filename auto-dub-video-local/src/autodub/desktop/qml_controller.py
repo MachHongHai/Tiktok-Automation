@@ -2,18 +2,21 @@ import os
 import queue
 import threading
 import hashlib
+from datetime import datetime, timezone
 
 from PySide6.QtCore import QAbstractListModel, QModelIndex, QObject, Property, Qt, QTimer, QUrl, Signal, Slot
 from PySide6.QtWidgets import QFileDialog, QMessageBox
 
 from autodub.config import (
     CACHE_DIR,
+    RUNTIME_DATA_DIR,
 )
 from autodub.core.events import subscribe_log, unsubscribe_log
 from autodub.pipeline.job_manager import cancel_job
 from autodub.schemas.job import CropSettings, JobConfig, SubtitleStyle
 from autodub.services import job_store
 from autodub.services.desktop_jobs import create_desktop_job
+from autodub.services import desktop_settings
 from autodub.utils.ffmpeg import get_video_dimensions
 
 
@@ -87,6 +90,7 @@ class JobListModel(QAbstractListModel):
     UpdatedRole = Qt.ItemDataRole.UserRole + 6
     ProgressRole = Qt.ItemDataRole.UserRole + 7
     ThumbnailRole = Qt.ItemDataRole.UserRole + 8
+    ProjectNameRole = Qt.ItemDataRole.UserRole + 9
 
     def __init__(self):
         super().__init__()
@@ -108,6 +112,7 @@ class JobListModel(QAbstractListModel):
             self.UpdatedRole: job.updated_at,
             self.ProgressRole: job.progress,
             self.ThumbnailRole: self._thumbnail_source(job),
+            self.ProjectNameRole: job.project_name or job.original_filename,
         }.get(role)
 
     def roleNames(self):
@@ -120,6 +125,7 @@ class JobListModel(QAbstractListModel):
             self.UpdatedRole: b"updatedAt",
             self.ProgressRole: b"progress",
             self.ThumbnailRole: b"thumbnailSource",
+            self.ProjectNameRole: b"projectName",
         }
 
     def set_jobs(self, jobs):
@@ -239,6 +245,9 @@ class AutoDubController(QObject):
     previewOpenRequested = Signal()
     jobDeleted = Signal()
     batchChanged = Signal()
+    settingsChanged = Signal()
+    projectSetupChanged = Signal()
+    projectPrepared = Signal()
 
     def __init__(self):
         super().__init__()
@@ -268,10 +277,17 @@ class AutoDubController(QObject):
         self._subtitle_box_width = 72
         self._subtitle_box_height = 12
         self._preview_source = ""
+        self._preview_poster_source = ""
         self._preview_title = "Preview"
         self._preview_interactive = False
         self._preview_aspect_ratio = 16 / 9
+        settings = desktop_settings.load_settings()
+        self._settings_theme = settings["theme"]
+        self._settings_language = settings["language"]
+        self._project_directory = os.path.join(RUNTIME_DATA_DIR, "projects")
+        self._project_name = ""
         self._log_queue = queue.Queue()
+        self._thumbnail_refresh_running = False
 
         subscribe_log(self._on_job_log)
         self._log_timer = QTimer(self)
@@ -447,7 +463,7 @@ class AutoDubController(QObject):
     @Property(str, notify=processingChanged)
     def processingText(self):
         job = job_store.get_job(self._processing_job_id) if self._processing_job_id else None
-        return f"{job.original_filename} | {job.status}" if job else "No active job"
+        return f"{job.original_filename} | {job.step_detail or job.status}" if job else "No active job"
 
     @Property(str, notify=selectedJobChanged)
     def selectedTitle(self):
@@ -467,12 +483,30 @@ class AutoDubController(QObject):
     @Property(str, notify=selectedJobChanged)
     def selectedStep(self):
         job = job_store.get_job(self._selected_job_id) if self._selected_job_id else None
-        return job.step if job else "pending"
+        return job.step_detail or job.step if job else "pending"
 
     @Property(int, notify=selectedJobChanged)
     def selectedProgress(self):
         job = job_store.get_job(self._selected_job_id) if self._selected_job_id else None
         return job.progress if job else 0
+
+    @Property(str, notify=selectedJobChanged)
+    def selectedElapsed(self):
+        job = job_store.get_job(self._selected_job_id) if self._selected_job_id else None
+        if not job or not job.started_at:
+            return ""
+        try:
+            started_at = datetime.fromisoformat(job.started_at.replace("Z", "+00:00"))
+            return self._format_duration((datetime.now(timezone.utc) - started_at).total_seconds())
+        except ValueError:
+            return ""
+
+    @Property(str, notify=selectedJobChanged)
+    def selectedEta(self):
+        job = job_store.get_job(self._selected_job_id) if self._selected_job_id else None
+        if not job or job.estimated_remaining_seconds is None or job.status != "processing":
+            return ""
+        return self._format_duration(job.estimated_remaining_seconds)
 
     @Property(str, notify=selectedJobChanged)
     def selectedUpdatedAt(self):
@@ -531,6 +565,26 @@ class AutoDubController(QObject):
         return self._preview_source
 
     @Property(str, notify=previewChanged)
+    def previewPosterSource(self):
+        return self._preview_poster_source
+
+    @Property(str, notify=settingsChanged)
+    def settingsTheme(self):
+        return self._settings_theme
+
+    @Property(str, notify=settingsChanged)
+    def settingsLanguage(self):
+        return self._settings_language
+
+    @Property(str, notify=projectSetupChanged)
+    def projectDirectory(self):
+        return self._project_directory
+
+    @Property(str, notify=projectSetupChanged)
+    def projectName(self):
+        return self._project_name
+
+    @Property(str, notify=previewChanged)
     def previewTitle(self):
         return self._preview_title
 
@@ -567,6 +621,67 @@ class AutoDubController(QObject):
         path, _ = QFileDialog.getOpenFileName(None, "Choose input video", "", "Video files (*.mp4 *.mov *.mkv);;All files (*.*)")
         if path:
             self.importVideo(path)
+
+    @Slot()
+    def browseProjectDirectory(self):
+        os.makedirs(self._project_directory, exist_ok=True)
+        path = QFileDialog.getExistingDirectory(None, "Choose project folder", self._project_directory)
+        if path:
+            self._project_directory = os.path.abspath(path)
+            self.projectSetupChanged.emit()
+
+    @Slot(str, str, result=bool)
+    def prepareProject(self, project_name, project_directory):
+        project_name = project_name.strip()
+        project_directory = project_directory.strip()
+        if not project_name:
+            QMessageBox.warning(None, "Project name", "Enter a project name.")
+            return False
+        if not project_directory:
+            QMessageBox.warning(None, "Project folder", "Choose a project folder.")
+            return False
+        self._project_name = project_name
+        self._project_directory = os.path.abspath(project_directory)
+        self.videoPath = ""
+        self._selected_job_id = None
+        self._logs = ""
+        self.tasks.set_job(None)
+        self.projectSetupChanged.emit()
+        self.selectedJobChanged.emit()
+        self.logsChanged.emit()
+        self.projectPrepared.emit()
+        return True
+
+    @Slot(str, str)
+    def applySettings(self, theme, language):
+        try:
+            settings = desktop_settings.save_settings(
+                {
+                    "theme": theme,
+                    "language": language,
+                }
+            )
+        except OSError as exc:
+            QMessageBox.warning(None, "Settings", f"Cannot use this output folder: {exc}")
+            return
+        self._settings_theme = settings["theme"]
+        self._settings_language = settings["language"]
+        self._status_message = "Settings applied"
+        self.settingsChanged.emit()
+        self.statusMessageChanged.emit()
+
+    @Slot()
+    def resetSettings(self):
+        try:
+            settings = desktop_settings.reset_settings()
+        except OSError as exc:
+            QMessageBox.warning(None, "Settings", f"Cannot restore defaults: {exc}")
+            return
+        self._settings_theme = settings["theme"]
+        self._settings_language = settings["language"]
+        self._status_message = "Settings reset to defaults"
+        self.settingsChanged.emit()
+        self.statusMessageChanged.emit()
 
     @Slot(str)
     def importVideo(self, path):
@@ -716,6 +831,43 @@ class AutoDubController(QObject):
         self.refreshJobs()
         threading.Thread(target=self._run_pipeline, args=(job.job_id,), daemon=True).start()
 
+    @Slot(result=bool)
+    def startProjectJob(self):
+        if self._is_processing:
+            QMessageBox.warning(None, "Job running", "A job is already processing.")
+            return False
+        if not self._video_path.strip():
+            QMessageBox.critical(None, "Missing video", "Please choose an input video.")
+            return False
+        if not self._project_name.strip():
+            QMessageBox.warning(None, "Project name", "Enter a project name.")
+            return False
+        if not self._project_directory.strip():
+            QMessageBox.warning(None, "Project folder", "Choose a project folder.")
+            return False
+        try:
+            job = create_desktop_job(
+                self._video_path,
+                self._build_config(),
+                project_name=self._project_name,
+                project_directory=self._project_directory,
+            )
+        except Exception as exc:
+            QMessageBox.critical(None, "Cannot create project", str(exc))
+            return False
+
+        self._processing_job_id = job.job_id
+        self._selected_job_id = job.job_id
+        self._is_processing = True
+        self._logs = self._read_job_logs(job.job_id)
+        self.tasks.set_job(job)
+        self.processingChanged.emit()
+        self.selectedJobChanged.emit()
+        self.logsChanged.emit()
+        self.refreshJobs()
+        threading.Thread(target=self._run_pipeline, args=(job.job_id,), daemon=True).start()
+        return True
+
     @Slot()
     def stopJob(self):
         if self._batch_running:
@@ -797,11 +949,30 @@ class AutoDubController(QObject):
 
     @Slot()
     def refreshJobs(self):
-        self.jobs.set_jobs(job_store.list_jobs()[:40])
+        jobs = job_store.list_jobs()[:40]
+        self.jobs.set_jobs(jobs)
         self._refresh_batch_model()
         selected = job_store.get_job(self._selected_job_id) if self._selected_job_id else None
         self.tasks.set_job(selected)
         self.selectedJobChanged.emit()
+        missing_thumbnails = [job.job_id for job in jobs if not job.files.get("thumbnail")]
+        if missing_thumbnails and not self._thumbnail_refresh_running:
+            self._thumbnail_refresh_running = True
+            threading.Thread(target=self._create_missing_thumbnails, args=(missing_thumbnails,), daemon=True).start()
+
+    def _create_missing_thumbnails(self, job_ids):
+        try:
+            for job_id in job_ids:
+                job = job_store.get_job(job_id)
+                if not job or job.files.get("thumbnail"):
+                    continue
+                video_path = self._resolve_job_file(job, ("video_input", "input_video"), ("input", "video.mp4"))
+                thumbnail_path = self._create_video_thumbnail_path(video_path)
+                if thumbnail_path:
+                    job.files["thumbnail"] = thumbnail_path
+                    job_store.save_job(job)
+        finally:
+            self._log_queue.put("__THUMBNAILS_READY__")
 
     @Slot()
     def openInputPreview(self):
@@ -811,6 +982,15 @@ class AutoDubController(QObject):
             QMessageBox.information(None, "Input preview", "Choose an input video before opening the preview editor.")
             return
         self._open_preview(video_path, "Input Preview Editor", True)
+
+    @Slot()
+    def openInputFile(self):
+        job = job_store.get_job(self._selected_job_id) if self._selected_job_id else None
+        input_path = self._resolve_job_file(job, ("video_input", "input_video"), ("input", "video.mp4"))
+        if not input_path or not os.path.exists(input_path):
+            QMessageBox.information(None, "Open input video", "Input video is not available yet.")
+            return
+        self._open_path(input_path)
 
     @Slot()
     def openOutputFile(self):
@@ -880,6 +1060,8 @@ class AutoDubController(QObject):
             crop=CropSettings(),
             enable_audio_separation=self._enable_audio_separation,
             original_video_volume=self._original_volume,
+            project_name=self._project_name,
+            project_directory=self._project_directory,
         )
 
     def _run_pipeline(self, job_id):
@@ -947,6 +1129,9 @@ class AutoDubController(QObject):
                 self.refreshJobs()
                 self.processingChanged.emit()
                 self.batchChanged.emit()
+            elif item == "__THUMBNAILS_READY__":
+                self._thumbnail_refresh_running = False
+                self.refreshJobs()
             else:
                 self._logs = f"{self._logs}\n{item}".strip()
                 changed = True
@@ -1009,6 +1194,15 @@ class AutoDubController(QObject):
         return code
 
     @staticmethod
+    def _format_duration(seconds):
+        seconds = max(0, round(seconds))
+        minutes, seconds = divmod(seconds, 60)
+        hours, minutes = divmod(minutes, 60)
+        if hours:
+            return f"{hours}:{minutes:02}:{seconds:02}"
+        return f"{minutes}:{seconds:02}"
+
+    @staticmethod
     def _voice_options_for_language(language_code):
         voices = EDGE_TTS_VOICES_BY_LANGUAGE.get(language_code) or EDGE_TTS_VOICES_BY_LANGUAGE["en"]
         return [{"voice": voice, "label": f"{label} ({voice})"} for voice, label in voices]
@@ -1036,6 +1230,7 @@ class AutoDubController(QObject):
         self._preview_title = title
         self._preview_interactive = interactive
         self._preview_source = QUrl.fromLocalFile(path).toString()
+        self._preview_poster_source = self._create_video_thumbnail(path)
         self._preview_aspect_ratio = 16 / 9
         try:
             width, height = get_video_dimensions(path)
