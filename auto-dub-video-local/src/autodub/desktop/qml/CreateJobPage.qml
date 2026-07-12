@@ -1,16 +1,38 @@
 import QtQuick
+import QtQuick.Controls.Basic
 import QtQuick.Layouts
 import "."
 
-ColumnLayout {
+ScrollView {
     id: root
+    signal requestReviewTranslation()
+    signal requestBack()
+    clip: true
 
-    spacing: Theme.gap
+    ScrollBar.vertical: ScrollBar {}
 
-    PageHeader {
+    ColumnLayout {
+        id: workspaceContent
+        width: root.availableWidth
+
+        spacing: Theme.gap
+
+    RowLayout {
         Layout.fillWidth: true
-        title: controller.projectName || I18n.t("Create a new dub")
-        subtitle: controller.projectDirectory || I18n.t("Turn one source video into a translated, voiced and captioned export.")
+        spacing: 12
+
+        AppButton {
+            Layout.preferredWidth: 96
+            text: I18n.t("Back")
+            tone: "ghost"
+            onClicked: root.requestBack()
+        }
+
+        PageHeader {
+            Layout.fillWidth: true
+            title: controller.projectName || controller.selectedFileName || I18n.t("Create a new dub")
+            subtitle: controller.projectDirectory || I18n.t("Turn one source video into a translated, voiced and captioned export.")
+        }
     }
 
     RowLayout {
@@ -99,6 +121,7 @@ ColumnLayout {
                     id: sourceDropArea
                     anchors.fill: parent
                     keys: ["text/uri-list"]
+                    enabled: !controller.hasSelectedJob && !controller.isProcessing
 
                     onEntered: function(drag) {
                         if (drag.hasUrls) {
@@ -117,7 +140,7 @@ ColumnLayout {
                 }
 
                 TapHandler {
-                    enabled: controller.videoPath.length === 0
+                    enabled: controller.videoPath.length === 0 && !controller.hasSelectedJob
                     onTapped: controller.browseVideo()
                 }
             }
@@ -152,6 +175,7 @@ ColumnLayout {
                 AppButton {
                     Layout.preferredWidth: 152
                     text: controller.videoPath.length > 0 ? I18n.t("Replace") : I18n.t("Browse")
+                    enabled: !controller.isProcessing
                     onClicked: controller.browseVideo()
                 }
             }
@@ -163,7 +187,7 @@ ColumnLayout {
                 AppButton {
                     Layout.fillWidth: true
                     text: I18n.t("Edit subtitle frame")
-                    enabled: controller.videoPath.length > 0
+                    enabled: controller.videoPath.length > 0 && !controller.isProcessing
                     onClicked: controller.openInputPreview()
                 }
 
@@ -225,9 +249,29 @@ ColumnLayout {
 
                 AppComboBox {
                     Layout.fillWidth: true
+                    enabled: !controller.isProcessing
                     model: ["auto", "en", "zh", "vi"]
                     currentIndex: model.indexOf(controller.sourceLanguage)
                     onActivated: controller.sourceLanguage = currentText
+                }
+
+                Text {
+                    text: qsTr("Workflow")
+                    color: Theme.textMuted
+                    font.pixelSize: Theme.caption
+                }
+
+                AppComboBox {
+                    Layout.fillWidth: true
+                    enabled: !controller.isProcessing
+                    model: [
+                        { "label": qsTr("Full auto"), "value": "A" },
+                        { "label": qsTr("Review then dub"), "value": "review" }
+                    ]
+                    textRole: "label"
+                    valueRole: "value"
+                    currentIndex: controller.workflowMode === "review" ? 1 : 0
+                    onActivated: controller.workflowMode = currentValue
                 }
 
                 Text {
@@ -240,6 +284,7 @@ ColumnLayout {
                 SearchableLanguageCombo {
                     Layout.fillWidth: true
                     Layout.preferredHeight: 42
+                    enabled: !controller.isProcessing
                     options: controller.targetLanguageOptions
                     selectedCode: controller.targetLanguage
                     onSelected: function(code) {
@@ -256,6 +301,7 @@ ColumnLayout {
 
                 AppComboBox {
                     Layout.fillWidth: true
+                    enabled: !controller.isProcessing
                     textRole: "label"
                     valueRole: "voice"
                     model: controller.ttsVoiceOptions
@@ -272,6 +318,7 @@ ColumnLayout {
 
                 AppComboBox {
                     Layout.fillWidth: true
+                    enabled: !controller.isProcessing
                     textRole: "label"
                     valueRole: "value"
                     model: [
@@ -299,6 +346,7 @@ ColumnLayout {
 
             AppCheckBox {
                 Layout.fillWidth: true
+                enabled: !controller.isProcessing
                 text: I18n.t("Separate vocals for music or noisy audio")
                 checked: controller.enableAudioSeparation
                 onToggled: controller.enableAudioSeparation = checked
@@ -330,6 +378,7 @@ ColumnLayout {
 
                 AppSlider {
                     Layout.fillWidth: true
+                    enabled: !controller.isProcessing
                     from: 0
                     to: 100
                     stepSize: 1
@@ -346,6 +395,7 @@ ColumnLayout {
                 Layout.fillWidth: true
                 text: controller.isProcessing ? qsTr("A job is already processing") : I18n.t("Create and process")
                 tone: "primary"
+                visible: !controller.hasSelectedJob
                 enabled: !controller.isProcessing && controller.videoPath.length > 0
                 onClicked: controller.startProjectJob()
             }
@@ -386,7 +436,7 @@ ColumnLayout {
                     Text {
                         Layout.fillWidth: true
                         text: controller.isProcessing
-                              ? controller.processingText
+                              ? controller.selectedStageLabel
                               : controller.selectedProgress >= 100
                               ? I18n.t("Last export ready")
                                 : I18n.t("No active job")
@@ -407,15 +457,7 @@ ColumnLayout {
 
                     Text {
                         visible: controller.selectedElapsed.length > 0
-                        text: qsTr("Elapsed %1").arg(controller.selectedElapsed)
-                        color: Theme.textMuted
-                        font.pixelSize: Theme.caption
-                        textFormat: Text.PlainText
-                    }
-
-                    Text {
-                        visible: controller.selectedEta.length > 0
-                        text: qsTr("ETA %1").arg(controller.selectedEta)
+                        text: (controller.selectedStatus === "processing" ? I18n.t("Time running") : I18n.t("Processing time")) + " " + controller.selectedElapsed
                         color: Theme.textMuted
                         font.pixelSize: Theme.caption
                         textFormat: Text.PlainText
@@ -424,7 +466,7 @@ ColumnLayout {
 
                 Text {
                     Layout.fillWidth: true
-                    text: controller.selectedStep || I18n.t("Processing status will appear here")
+                    text: controller.selectedProgressDetail || controller.selectedStep || I18n.t("Processing status will appear here")
                     color: Theme.textMuted
                     font.pixelSize: Theme.caption
                     textFormat: Text.PlainText
@@ -438,19 +480,66 @@ ColumnLayout {
             }
 
             AppButton {
+                visible: controller.selectedStatus === "paused"
+                Layout.preferredWidth: 116
+                text: qsTr("Resume")
+                tone: "primary"
+                onClicked: controller.resumeSelectedJob()
+            }
+
+            AppButton {
+                visible: controller.hasSelectedJob && !controller.isProcessing
+                Layout.preferredWidth: 112
+                text: qsTr("Restart")
+                onClicked: controller.restartSelectedJob()
+            }
+
+            AppButton {
+                visible: controller.selectedStatus === "awaiting_review"
+                Layout.preferredWidth: 166
+                text: qsTr("Review translation")
+                tone: "primary"
+                onClicked: root.requestReviewTranslation()
+            }
+
+            AppButton {
                 Layout.preferredWidth: 108
-                text: I18n.t("Stop")
+                text: qsTr("Pause")
                 tone: "danger"
                 enabled: controller.isProcessing
+                visible: controller.isProcessing
                 onClicked: controller.stopJob()
             }
 
             AppButton {
+                visible: controller.hasSelectedJob
+                Layout.preferredWidth: 148
+                text: I18n.t("Open input video")
+                onClicked: controller.openInputFile()
+            }
+
+            AppButton {
                 Layout.preferredWidth: 164
-                text: I18n.t("Open output")
-                enabled: controller.selectedOutputPath.length > 0
+                text: I18n.t("Open output video")
+                enabled: controller.hasSelectedJob && controller.selectedOutputPath.length > 0
                 onClicked: controller.openOutputFile()
             }
+
+            AppButton {
+                visible: controller.hasSelectedJob
+                Layout.preferredWidth: 174
+                text: I18n.t("Open output folder")
+                onClicked: controller.openOutputFolder()
+            }
+
+            AppButton {
+                visible: controller.hasSelectedJob
+                Layout.preferredWidth: 124
+                text: I18n.t("Delete job")
+                tone: "danger"
+                onClicked: controller.deleteSelectedJob()
+            }
         }
+    }
     }
 }

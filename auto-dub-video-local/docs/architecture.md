@@ -1,95 +1,118 @@
-# Desktop Architecture
+# Architecture
 
-## Layout
+## Purpose and Boundaries
+
+Auto Dub Video Local is a local-first Windows application. The desktop process owns the user interface, job state, and orchestration. Media processing happens in Python pipeline modules and external command-line tools. No HTTP backend, browser client, or cloud database is part of the runtime architecture.
+
+```text
+PySide6 / QML desktop shell
+  -> AutoDubController
+  -> local job store and project files
+  -> pipeline orchestration
+  -> WhisperX, HY-MT2 worker, Edge TTS, Demucs, FFmpeg
+```
+
+## Source Layout
 
 ```text
 src/autodub/
-  desktop/      GUI PySide6 + QML/Qt Quick, desktop worker
-    qml/        QML screens, theme singleton, reusable controls
-  core/         Path runtime, logging, event bus
-  schemas/      Pydantic DTOs
-  services/     Job store and HY-MT2 translation worker
-  pipeline/     Audio/video processing steps
-  utils/        Shared helpers
+  desktop/
+    main.py                 Qt application bootstrap
+    qml_controller.py       QML-facing state, commands, and job coordination
+    qml/                    Pages, dialogs, design tokens, and reusable controls
+  pipeline/
+    process_job.py          Stage orchestration and checkpoint validation
+    extract_audio.py        FFmpeg audio extraction
+    transcribe.py           WhisperX warm cache, transcription, and alignment
+    audio_separation.py     Optional Demucs integration
+    tts.py                  Bounded-concurrency Edge TTS synthesis
+    audio_timeline.py       Timestamped speech and background-audio mixing
+    subtitle.py             SRT generation
+    render.py               FFmpeg video and ASS subtitle rendering
+  services/
+    job_store.py            Persistent job metadata and per-job logs
+    desktop_jobs.py         Project-aware job creation and media import
+    translation.py          HY-MT2 worker protocol
+    hymt2_worker.py         Isolated local translation worker entry point
+    desktop_settings.py     Theme and language persistence
+  schemas/
+    job.py                  JobConfig and JobInfo contracts
+  core/
+    paths.py                Source, frozen-app, and runtime-data path resolution
+    events.py               In-process job-log notifications
 ```
 
-## Luồng Chạy
+## Application Lifecycle
+
+1. `autodub_desktop.py` relaunches itself with `.venv\Scripts\python.exe` when available.
+2. `autodub.desktop.main` creates the Qt application and registers `AutoDubController` with the QML engine.
+3. `AutoDubController` loads settings and project metadata, starts polling timers, and begins WhisperX warm-up on a background thread.
+4. `Main.qml` presents Projects, Batch, Settings, and the shared processing workspace.
+5. Closing the application unsubscribes log events and releases the warmed WhisperX model.
+
+## Job State Model
+
+`JobInfo` is persisted as `job.json` in the job directory. Its important states are:
+
+| State | Meaning |
+| --- | --- |
+| `pending` | Created but not processing. |
+| `processing` | A pipeline stage is active. |
+| `awaiting_review` | Translation is ready and waits for user edits. |
+| `paused` | Processing was interrupted by the user; `resume_step` records the safe checkpoint. |
+| `done` | Final video has been rendered. |
+| `failed` | The pipeline captured an exception and wrote it to the job log. |
+| `cancelled` | A destructive cancellation occurred. |
+
+Every update persists progress, stage detail, current/total item counts, and timestamps. The QML progress surface reads this persisted data rather than maintaining a separate progress model.
+
+## Pipeline
 
 ```text
-autodub_desktop.py
-  -> autodub.desktop.main
-  -> autodub.desktop.qml_controller.AutoDubController
-  -> desktop/qml/Main.qml
-  -> autodub.services.desktop_jobs.create_desktop_job
-  -> autodub.pipeline.process_job.process_job_sync
-  -> %LOCALAPPDATA%/AutoDubVideoLocal/data/jobs/<job_id>/
+video input
+  -> extract audio
+  -> optional Demucs separation
+  -> WhisperX transcription and alignment
+  -> HY-MT2 translation
+  -> optional translation review
+  -> SRT generation
+  -> Edge TTS voice parts
+  -> audio timeline construction
+  -> FFmpeg render
 ```
 
-## Runtime Paths
+### WhisperX
 
-Source and EXE mode:
+`pipeline.transcribe` owns a process-local ASR cache. Warm-up loads the configured WhisperX model in a background thread. Subsequent transcription calls reuse it when the device matches. Alignment models are short-lived and released after use because they are language-specific and can consume significant VRAM.
 
-```text
-%LOCALAPPDATA%\AutoDubVideoLocal\data\
-  cache/
-  logs/
-  jobs/
-```
+### Translation
 
-Set `RUNTIME_DATA_DIR` to an absolute path such as `D:\AutoDubData` to store all mutable user data on another drive. Relative runtime paths are resolved inside the app data directory, never inside the source tree or executable bundle.
+HY-MT2 runs in a separate Python process. The parent writes a JSON request into the job `temp` directory, streams JSON-lines progress from the worker, then reads the JSON response. Isolating translation protects the Qt process from native Torch failures and releases the translation model after each job.
 
-`scripts/migrate-runtime-data.ps1` moves legacy `project/data` only when run with the explicit `-Move` flag, so large model caches are not moved unexpectedly during app startup.
+### Voice Synthesis
 
-`runtime/bin` chứa FFmpeg và FFprobe khi chạy từ source. Khi build, thư mục này được bundle vào `_internal/bin`.
+`pipeline.tts` creates one MP3 per translated segment. An asyncio semaphore bounds concurrent Edge TTS requests using `TTS_MAX_CONCURRENCY`, defaulting to three. Completion callbacks update both persistent progress and the job log.
 
-## Logging
+### Checkpoints
 
-`services.job_store.log_to_job()` là điểm log chuẩn cho pipeline:
+`process_job.py` records checkpoint signatures for translation, subtitles, voice parts, mixed audio, and final rendering. A checkpoint is valid only when its signature matches current inputs and all expected outputs exist and are non-empty. This permits safe reuse while preventing stale output from being treated as current.
 
-1. Ghi vào `%LOCALAPPDATA%/AutoDubVideoLocal/data/jobs/<job_id>/logs.txt`.
-2. Emit qua `core.events`.
-3. GUI append realtime vào panel Logs.
+## Runtime Data and Packaging
 
-## Translation Engines
+`core.paths` separates mutable data from source code and from the frozen executable bundle. `RUNTIME_DATA_DIR` controls the root location. In a PyInstaller distribution, bundled code and Qt assets are read-only implementation files; jobs, models, logs, and outputs continue to use the selected runtime directory.
 
-The translation engine is selected per job and stored as `translator_provider` in the job metadata, so benchmarks remain attributable after the job finishes.
+The build uses PyInstaller `--onedir` because Qt, Torch, WhisperX, and FFmpeg require adjacent native files. The executable is not designed to be relocated independently from its distribution directory.
 
-- `hymt2`: `tencent/Hy-MT2-1.8B`, runs locally in a dedicated worker when a job reaches translation. Its Hugging Face files are cached under `HF_HOME`; the worker exits after each job to release VRAM and isolate native Torch failures from the Qt GUI.
+## Observability
 
-HY-MT2 receives the target language plus a short window of previous subtitle lines as context, then returns one translation for each subtitle segment.
+`services.job_store.log_to_job` is the authoritative pipeline log path. It writes a timestamped line to `logs.txt` and emits an in-process event. The desktop controller subscribes to the event stream, appends live lines to the selected project's log, and polls persisted job metadata for state changes.
 
-Demucs is opt-in for new jobs. Use it when music or noisy background competes with the speaker; leave it disabled for clear speech to shorten the pipeline.
+## Concurrency Policy
 
-## Video Preview
+- One foreground pipeline job is active at a time.
+- Batch jobs are queued and run sequentially.
+- WhisperX warm-up is background work and serialises model loading with a lock.
+- HY-MT2 is isolated in one short-lived worker per translation phase.
+- Edge TTS is the only bounded fan-out stage, limited to one through four concurrent requests.
 
-`desktop/qml/PreviewWindow.qml` owns the Qt Multimedia input/output preview UI. It uses `MediaPlayer` and `VideoOutput` in QML. A single subtitle box is moved/resized in the input preview, and the final position/font size are saved through `AutoDubController.updatePreviewEdits()`. FFmpeg reproduces them using a temporary positioned ASS subtitle file during render.
-
-## UI Framework
-
-The main dashboard uses PySide6 + QML/Qt Quick Controls:
-
-- `desktop.main` creates `QQmlApplicationEngine`.
-- `desktop.qml_controller.AutoDubController` exposes jobs, settings, logs, and commands to QML.
-- `desktop/qml/Theme.qml` owns visual tokens.
-- `desktop/qml/Main.qml` composes a dark production-studio shell with `Create`, `Batch`, and `Jobs` navigation; `Job Detail` returns to the workspace that opened it.
-- `CreateJobPage.qml` separates source media, dubbing setup, and current processing status.
-- `BatchPage.qml` displays a thumbnail queue and runs queued jobs sequentially through the same pipeline worker.
-- `JobsPage.qml` uses dense, scannable rows; `JobDetailPage.qml` separates run controls from the activity log.
-- `desktop/qml/PreviewWindow.qml` provides the QML preview/editor window.
-- Job creation is full-auto only in the desktop UI.
-
-## PyInstaller
-
-Script build chính:
-
-```powershell
-.\scripts\build-exe.ps1
-```
-
-Build dùng `--onedir`. Danh sách `ExcludedModules` trong script chặn PyInstaller gom các package optional không dùng ở runtime desktop.
-
-## Hướng Tối Ưu
-
-- Tách bản Light không Demucs/WhisperX nếu cần bundle nhỏ.
-- Cân nhắc `faster-whisper` cho deploy nhẹ hơn.
-- Thêm Settings screen để sửa `.env` trong GUI.
+This policy favours GPU stability and reproducibility over maximising throughput on a single workstation.

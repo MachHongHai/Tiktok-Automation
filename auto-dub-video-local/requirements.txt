@@ -1,18 +1,26 @@
 --extra-index-url https://download.pytorch.org/whl/cu128
+
+# Core desktop runtime
+PySide6-Essentials==6.11.1
 pydantic
+python-dotenv
+
+# GPU-capable speech and translation stack
 torch==2.8.0
 torchaudio==2.8.0
 torchvision==0.23.0
 whisperx==3.8.6
 pyannote-audio==4.0.7
 torchcodec==0.7.0
+transformers>=5.6.0
+audioop-lts
+
+# Media processing and voice synthesis
 edge-tts
 pydub
 srt
-python-dotenv
-transformers>=5.6.0
-audioop-lts
 demucs
+
+# Distribution tooling
 pyinstaller
-PySide6-Essentials==6.11.1
 

@@ -2,6 +2,7 @@
 import os
 import json
 import edge_tts
+from autodub.config import TTS_MAX_CONCURRENCY
 from autodub.services.job_store import log_to_job
 
 def preprocess_text_for_tts(text: str) -> str:
@@ -32,33 +33,36 @@ async def tts_segment_with_retry(text: str, voice: str, output_path: str, retrie
 
 def generate_voice_parts(segments_json_path: str, voice_parts_dir: str, voice: str, job_id: str, progress_callback=None):
     """Translates a JSON segments file into individual voice MP3 files."""
-    log_to_job(job_id, f"Starting voice parts generation with voice '{voice}'...")
+    log_to_job(job_id, f"Starting voice parts generation with voice '{voice}' (up to {TTS_MAX_CONCURRENCY} concurrent requests)...")
     
     with open(segments_json_path, "r", encoding="utf-8") as f:
         segments = json.load(f)
         
     async def run_all():
         total = len(segments)
-        for idx, seg in enumerate(segments, 1):
+        limiter = asyncio.Semaphore(TTS_MAX_CONCURRENCY)
+        completed = 0
+
+        async def synthesize(idx, seg):
+            nonlocal completed
             text = seg["text"]
             part_path = os.path.join(voice_parts_dir, f"voice_{idx:04d}.mp3")
-            
             if not text.strip():
-                # Write an empty file to represent silence
                 open(part_path, "wb").close()
-                if progress_callback:
-                    progress_callback(idx, total)
-                continue
-                
-            try:
-                log_to_job(job_id, f"[{idx}/{total}] TTS synthesis: '{text}' -> {os.path.basename(part_path)}")
-                await tts_segment_with_retry(text, voice, part_path)
-            except Exception as tts_err:
-                log_to_job(job_id, f"[{idx}/{total}] WARNING: TTS synthesis failed for '{text}': {str(tts_err)}. Using silence fallback.")
-                open(part_path, "wb").close()
-            finally:
-                if progress_callback:
-                    progress_callback(idx, total)
+            else:
+                async with limiter:
+                    try:
+                        log_to_job(job_id, f"[{idx}/{total}] TTS synthesis with '{voice}': '{text}' -> {os.path.basename(part_path)}")
+                        await tts_segment_with_retry(text, voice, part_path)
+                    except Exception as tts_err:
+                        log_to_job(job_id, f"[{idx}/{total}] WARNING: TTS synthesis failed for '{text}': {str(tts_err)}. Using silence fallback.")
+                        open(part_path, "wb").close()
+            completed += 1
+            log_to_job(job_id, f"Voice progress: {completed}/{total} completed.")
+            if progress_callback:
+                progress_callback(completed, total)
+
+        await asyncio.gather(*(synthesize(idx, seg) for idx, seg in enumerate(segments, 1)))
             
     # Run async function using a dedicated event loop
     try:

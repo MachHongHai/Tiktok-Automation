@@ -1,4 +1,6 @@
 import os
+import json
+import shutil
 import queue
 import threading
 import hashlib
@@ -12,12 +14,13 @@ from autodub.config import (
     RUNTIME_DATA_DIR,
 )
 from autodub.core.events import subscribe_log, unsubscribe_log
-from autodub.pipeline.job_manager import cancel_job
+from autodub.pipeline.job_manager import cancel_job, pause_job
 from autodub.schemas.job import CropSettings, JobConfig, SubtitleStyle
 from autodub.services import job_store
 from autodub.services.desktop_jobs import create_desktop_job
 from autodub.services import desktop_settings
 from autodub.utils.ffmpeg import get_video_dimensions
+from autodub.pipeline.transcribe import release_warm_whisperx_model, warm_whisperx_model
 
 
 POPULAR_TARGET_LANGUAGES = [
@@ -237,6 +240,7 @@ class AutoDubController(QObject):
     outputFormatChanged = Signal()
     enableAudioSeparationChanged = Signal()
     originalVolumeChanged = Signal()
+    workflowModeChanged = Signal()
     selectedJobChanged = Signal()
     processingChanged = Signal()
     logsChanged = Signal()
@@ -262,6 +266,7 @@ class AutoDubController(QObject):
         self._output_format = "keep_ratio"
         self._enable_audio_separation = False
         self._original_volume = 60
+        self._workflow_mode = "A"
         self._selected_job_id = None
         self._processing_job_id = None
         self._is_processing = False
@@ -289,6 +294,8 @@ class AutoDubController(QObject):
         self._log_queue = queue.Queue()
         self._thumbnail_refresh_running = False
 
+        threading.Thread(target=self._warm_whisperx, daemon=True).start()
+
         subscribe_log(self._on_job_log)
         self._log_timer = QTimer(self)
         self._log_timer.timeout.connect(self._drain_log_queue)
@@ -302,6 +309,15 @@ class AutoDubController(QObject):
 
     def shutdown(self):
         unsubscribe_log(self._on_job_log)
+        release_warm_whisperx_model()
+
+    def _warm_whisperx(self):
+        try:
+            warm_whisperx_model()
+            self._status_message = "WhisperX model ready"
+        except Exception as exc:
+            self._status_message = f"WhisperX warm-up unavailable: {exc}"
+        self.statusMessageChanged.emit()
 
     @Property(QObject, constant=True)
     def jobModel(self):
@@ -456,6 +472,16 @@ class AutoDubController(QObject):
             self._original_volume = value
             self.originalVolumeChanged.emit()
 
+    @Property(str, notify=workflowModeChanged)
+    def workflowMode(self): return self._workflow_mode
+
+    @workflowMode.setter
+    def workflowMode(self, value):
+        value = "review" if value == "review" else "A"
+        if self._workflow_mode != value:
+            self._workflow_mode = value
+            self.workflowModeChanged.emit()
+
     @Property(bool, notify=processingChanged)
     def isProcessing(self):
         return self._is_processing
@@ -469,6 +495,21 @@ class AutoDubController(QObject):
     def selectedTitle(self):
         job = job_store.get_job(self._selected_job_id) if self._selected_job_id else None
         return f"{job.original_filename} | {job.status}" if job else "No job selected"
+
+    @Property(bool, notify=selectedJobChanged)
+    def hasSelectedJob(self):
+        return self._selected_job_id is not None and job_store.get_job(self._selected_job_id) is not None
+
+    @Property("QVariantList", notify=selectedJobChanged)
+    def reviewSegments(self):
+        job = job_store.get_job(self._selected_job_id) if self._selected_job_id else None
+        if not job or job.status != "awaiting_review":
+            return []
+        try:
+            with open(job.files["transcript_json"], "r", encoding="utf-8") as file:
+                return json.load(file)
+        except (OSError, json.JSONDecodeError):
+            return []
 
     @Property(str, notify=selectedJobChanged)
     def selectedFileName(self):
@@ -491,22 +532,49 @@ class AutoDubController(QObject):
         return job.progress if job else 0
 
     @Property(str, notify=selectedJobChanged)
+    def selectedStageLabel(self):
+        job = job_store.get_job(self._selected_job_id) if self._selected_job_id else None
+        if not job:
+            return "Ready"
+        labels = {
+            "starting": "Preparing project",
+            "extracting_audio": "Extracting audio",
+            "separating_audio": "Separating vocals",
+            "transcribing": "Transcribing speech",
+            "translating": "Translating",
+            "review_translation": "Waiting for translation review",
+            "creating_subtitle": "Creating subtitles",
+            "creating_voice": "Generating voice",
+            "building_audio_timeline": "Mixing audio",
+            "rendering": "Rendering video",
+            "paused": "Paused",
+            "done": "Export complete",
+        }
+        return labels.get(job.step, job.step_detail or job.status)
+
+    @Property(str, notify=selectedJobChanged)
+    def selectedProgressDetail(self):
+        job = job_store.get_job(self._selected_job_id) if self._selected_job_id else None
+        if not job:
+            return ""
+        item_detail = f"{job.current_item}/{job.total_items}" if job.total_items else ""
+        return " | ".join(part for part in (job.step_detail, item_detail) if part)
+
+    @Property(str, notify=selectedJobChanged)
     def selectedElapsed(self):
         job = job_store.get_job(self._selected_job_id) if self._selected_job_id else None
         if not job or not job.started_at:
             return ""
         try:
             started_at = datetime.fromisoformat(job.started_at.replace("Z", "+00:00"))
-            return self._format_duration((datetime.now(timezone.utc) - started_at).total_seconds())
+            if job.status == "processing":
+                seconds = (datetime.now(timezone.utc) - started_at).total_seconds()
+            else:
+                finished_at = datetime.fromisoformat(job.updated_at.replace("Z", "+00:00"))
+                seconds = (finished_at - started_at).total_seconds()
+            return self._format_duration(max(0, seconds))
         except ValueError:
             return ""
-
-    @Property(str, notify=selectedJobChanged)
-    def selectedEta(self):
-        job = job_store.get_job(self._selected_job_id) if self._selected_job_id else None
-        if not job or job.estimated_remaining_seconds is None or job.status != "processing":
-            return ""
-        return self._format_duration(job.estimated_remaining_seconds)
 
     @Property(str, notify=selectedJobChanged)
     def selectedUpdatedAt(self):
@@ -620,7 +688,33 @@ class AutoDubController(QObject):
     def browseVideo(self):
         path, _ = QFileDialog.getOpenFileName(None, "Choose input video", "", "Video files (*.mp4 *.mov *.mkv);;All files (*.*)")
         if path:
-            self.importVideo(path)
+            if self._selected_job_id:
+                self.replaceSelectedJobVideo(path)
+            else:
+                self.importVideo(path)
+
+    @Slot(str)
+    def replaceSelectedJobVideo(self, path):
+        job = job_store.get_job(self._selected_job_id) if self._selected_job_id else None
+        normalized_path = self._normalize_video_path(path)
+        if not job or self._is_processing:
+            return
+        if not os.path.isfile(normalized_path) or os.path.splitext(normalized_path)[1].lower() not in {".mp4", ".mov", ".mkv"}:
+            QMessageBox.warning(None, "Invalid video", "Choose an MP4, MOV, or MKV video file.")
+            return
+        destination = job.files["video_input"]
+        shutil.copy2(normalized_path, destination)
+        job.original_filename = os.path.basename(normalized_path)
+        thumbnail_path = self._create_video_thumbnail_path(destination)
+        if thumbnail_path:
+            job.files["thumbnail"] = thumbnail_path
+        job_store.save_job(job)
+        self.videoPath = destination
+        self._logs = self._read_job_logs(job.job_id)
+        job_store.log_to_job(job.job_id, f"Input video replaced with: {job.original_filename}")
+        self.videoThumbnailChanged.emit()
+        self.selectedJobChanged.emit()
+        self.logsChanged.emit()
 
     @Slot()
     def browseProjectDirectory(self):
@@ -875,17 +969,70 @@ class AutoDubController(QObject):
             return
         if not self._processing_job_id:
             return
-        if QMessageBox.question(None, "Stop job", "Stop the processing job?") != QMessageBox.StandardButton.Yes:
+        if QMessageBox.question(None, "Pause job", "Pause this job? You can resume it later from Projects.") != QMessageBox.StandardButton.Yes:
             return
         job_id = self._processing_job_id
-        cancel_job(job_id)
-        job_store.update_job(job_id, status="cancelled", error=None, step="cancelled")
-        job_store.log_to_job(job_id, "Stop requested. Active subprocesses were force-stopped.")
+        job = job_store.get_job(job_id)
+        resume_step = job.step if job else ""
+        pause_job(job_id)
+        job_store.update_job(job_id, status="paused", error=None, step="paused", resume_step=resume_step, step_detail=f"Paused during {resume_step or 'startup'}")
+        job_store.log_to_job(job_id, "Pause requested. Active subprocesses were stopped.")
         self._processing_job_id = None
         self._is_processing = False
         self.processingChanged.emit()
         self.selectedJobChanged.emit()
         self.refreshJobs()
+
+    @Slot()
+    def resumeSelectedJob(self):
+        job = job_store.get_job(self._selected_job_id) if self._selected_job_id else None
+        if not job or job.status != "paused" or self._is_processing:
+            return
+        self._apply_setup_to_job(job)
+        job_store.update_job(job.job_id, status="processing", step=job.resume_step or "starting", step_detail="Resuming job")
+        self._processing_job_id = job.job_id
+        self._is_processing = True
+        self.processingChanged.emit()
+        self.selectedJobChanged.emit()
+        threading.Thread(target=self._run_pipeline, args=(job.job_id,), daemon=True).start()
+
+    @Slot()
+    def restartSelectedJob(self):
+        job = job_store.get_job(self._selected_job_id) if self._selected_job_id else None
+        if not job or self._is_processing:
+            return
+        if QMessageBox.question(None, "Restart job", "Apply the current dubbing setup and restart this project?") != QMessageBox.StandardButton.Yes:
+            return
+        self._apply_setup_to_job(job, review_approved=False)
+        job_store.update_job(job.job_id, status="processing", progress=0, step="starting", resume_step="", step_detail="Restarting job", error=None)
+        job_store.log_to_job(job.job_id, "Restart requested with the updated dubbing setup.")
+        self._processing_job_id = job.job_id
+        self._is_processing = True
+        self.processingChanged.emit()
+        self.selectedJobChanged.emit()
+        threading.Thread(target=self._run_pipeline, args=(job.job_id,), daemon=True).start()
+
+    @Slot(str)
+    def approveTranslationReview(self, payload):
+        job = job_store.get_job(self._selected_job_id) if self._selected_job_id else None
+        if not job or job.status != "awaiting_review":
+            return
+        try:
+            segments = json.loads(payload)
+            if not isinstance(segments, list) or any(not str(item.get("text", "")).strip() for item in segments):
+                raise ValueError("Every translation must contain text.")
+            with open(job.files["transcript_json"], "w", encoding="utf-8") as file:
+                json.dump(segments, file, ensure_ascii=False, indent=2)
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            QMessageBox.warning(None, "Translation review", str(exc))
+            return
+        job_store.update_job(job.job_id, review_approved=True, status="processing", step="creating_subtitle", step_detail="Review approved; creating dub")
+        job_store.log_to_job(job.job_id, f"Translation review approved with {len(segments)} edited segments. Continuing with TTS and render.")
+        self._processing_job_id = job.job_id
+        self._is_processing = True
+        self.processingChanged.emit()
+        self.selectedJobChanged.emit()
+        threading.Thread(target=self._run_pipeline, args=(job.job_id,), daemon=True).start()
 
     @Slot(int)
     def selectJob(self, row: int):
@@ -896,9 +1043,32 @@ class AutoDubController(QObject):
 
     def _select_job(self, job):
         self._selected_job_id = job.job_id
+        self._project_name = job.project_name or os.path.splitext(job.original_filename)[0]
+        self._project_directory = job.project_directory or self._project_directory
+        self._source_language = job.source_language
+        self._workflow_mode = job.mode
+        self._target_language = job.target_language
+        self._tts_voice = job.tts_voice
+        self._output_format = job.output_format
+        self._enable_audio_separation = job.enable_audio_separation
+        self._original_volume = job.original_video_volume
+        input_path = self._resolve_job_file(job, ("video_input", "input_video"), ("input", "video.mp4"))
+        thumbnail_path = job.files.get("thumbnail") or ""
+        self._video_path = input_path
+        self._video_thumbnail_source = QUrl.fromLocalFile(thumbnail_path).toString() if os.path.exists(thumbnail_path) else ""
         self._load_job_preview(job)
         self._logs = self._read_job_logs(job.job_id)
         self.tasks.set_job(job)
+        self.videoPathChanged.emit()
+        self.videoThumbnailChanged.emit()
+        self.sourceLanguageChanged.emit()
+        self.targetLanguageChanged.emit()
+        self.ttsVoiceChanged.emit()
+        self.outputFormatChanged.emit()
+        self.enableAudioSeparationChanged.emit()
+        self.originalVolumeChanged.emit()
+        self.workflowModeChanged.emit()
+        self.projectSetupChanged.emit()
         self.selectedJobChanged.emit()
         self.logsChanged.emit()
 
@@ -1041,7 +1211,7 @@ class AutoDubController(QObject):
 
     def _build_config(self):
         return JobConfig(
-            mode="A",
+            mode=self._workflow_mode,
             source_language=self._source_language,
             target_language=self._target_language,
             translator_provider="hymt2",
@@ -1063,6 +1233,23 @@ class AutoDubController(QObject):
             project_name=self._project_name,
             project_directory=self._project_directory,
         )
+
+    def _apply_setup_to_job(self, job, review_approved=None):
+        config = self._build_config()
+        changes = {
+            "mode": config.mode,
+            "source_language": config.source_language,
+            "target_language": config.target_language,
+            "tts_voice": config.tts_voice,
+            "subtitle_style": config.subtitle_style,
+            "output_format": config.output_format,
+            "crop": config.crop,
+            "enable_audio_separation": config.enable_audio_separation,
+            "original_video_volume": config.original_video_volume,
+        }
+        if review_approved is not None:
+            changes["review_approved"] = review_approved
+        job_store.update_job(job.job_id, **changes)
 
     def _run_pipeline(self, job_id):
         self._execute_pipeline(job_id)

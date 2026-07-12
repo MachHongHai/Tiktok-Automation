@@ -22,7 +22,7 @@ class CropSettings(BaseModel):
     bottom_percent: int = 0
 
 class JobConfig(BaseModel):
-    mode: str = "A"  # Desktop UI creates full-auto jobs.
+    mode: str = "A"  # A = full auto, review = pause after translation.
     source_language: str = "auto"  # zh, en, auto
     target_language: str = "vi"
     translator_provider: str = "hymt2"
@@ -34,6 +34,7 @@ class JobConfig(BaseModel):
     original_video_volume: int = 60
     project_name: str = ""
     project_directory: str = ""
+    review_approved: bool = False
 
 class JobInfo(BaseModel):
     job_id: str
@@ -50,9 +51,12 @@ class JobInfo(BaseModel):
     original_video_volume: int = 60
     project_name: str = ""
     project_directory: str = ""
+    review_approved: bool = False
     status: str  # pending, processing, done, failed
     progress: int = 0
     step: str = "pending"
+    resume_step: str = ""
+    checkpoints: Dict[str, str] = Field(default_factory=dict)
     created_at: str
     updated_at: str
     started_at: Optional[str] = None

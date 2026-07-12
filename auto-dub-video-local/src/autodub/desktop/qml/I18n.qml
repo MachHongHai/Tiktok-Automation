@@ -12,7 +12,6 @@ QtObject {
             "Projects": "Projects",
             "Workspace": "Không gian xử lý",
             "Batch": "Hàng đợi",
-            "Jobs": "Công việc",
             "Job Detail": "Chi tiết công việc",
             "WORKSPACE": "KHÔNG GIAN LÀM VIỆC",
             "Settings": "Cài đặt",
@@ -48,6 +47,7 @@ QtObject {
             "Voice": "Giọng đọc",
             "Layout": "Bố cục",
             "Separate vocals for music or noisy audio": "Tách giọng nói khi có nhạc hoặc tạp âm",
+            "Match voices to detected speakers": "Tự ghép giọng theo người nói",
             "Original audio": "Âm thanh gốc",
             "Create and process": "Tạo và xử lý",
             "Open output": "Mở video xuất",
@@ -92,12 +92,13 @@ QtObject {
             ,"Recent jobs": "Job gần đây"
             ,"Newest activity appears first": "Hoạt động mới nhất hiển thị trước"
             ,"Back": "Quay lại"
-            ,"Job detail": "Chi tiết job"
             ,"Run status": "Trạng thái chạy"
             ,"Live pipeline progress": "Tiến độ pipeline trực tiếp"
             ,"Status": "Trạng thái"
             ,"Output": "Đầu ra"
             ,"Elapsed": "Đã chạy"
+            ,"Time running": "Thời gian đã chạy"
+            ,"Processing time": "Tổng thời gian xử lý"
             ,"Estimated remaining": "Còn ước tính"
             ,"Actions": "Thao tác"
             ,"Open input video": "Mở video nguồn"

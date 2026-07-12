@@ -16,11 +16,9 @@ ApplicationWindow {
     color: Theme.window
 
     property int pageIndex: 0
-    property int detailReturnPage: 2
+    property int workspaceReturnPage: 0
     readonly property string pageTitle: pageIndex === 0 ? I18n.t("Projects")
         : pageIndex === 1 ? I18n.t("Batch")
-        : pageIndex === 2 ? I18n.t("Jobs")
-        : pageIndex === 3 ? I18n.t("Job Detail")
         : I18n.t("Workspace")
 
     Component.onCompleted: {
@@ -40,6 +38,10 @@ ApplicationWindow {
         id: settingsDialog
     }
 
+    TranslationReviewDialog {
+        id: translationReviewDialog
+    }
+
     Connections {
         target: controller
 
@@ -48,7 +50,7 @@ ApplicationWindow {
         }
 
         function onJobDeleted() {
-            root.pageIndex = root.detailReturnPage
+            root.pageIndex = root.workspaceReturnPage
         }
 
         function onSettingsChanged() {
@@ -57,7 +59,7 @@ ApplicationWindow {
         }
 
         function onProjectPrepared() {
-            root.pageIndex = 4
+            root.pageIndex = 2
         }
     }
 
@@ -89,7 +91,7 @@ ApplicationWindow {
                 SidebarButton {
                     Layout.fillWidth: true
                     text: I18n.t("Projects")
-                    selected: root.pageIndex === 0 || root.pageIndex === 4
+                    selected: root.pageIndex === 0 || (root.pageIndex === 2 && root.workspaceReturnPage === 0)
                     onClicked: {
                         controller.refreshJobs()
                         root.pageIndex = 0
@@ -99,18 +101,8 @@ ApplicationWindow {
                 SidebarButton {
                     Layout.fillWidth: true
                     text: I18n.t("Batch")
-                    selected: root.pageIndex === 1 || (root.pageIndex === 3 && root.detailReturnPage === 1)
+                    selected: root.pageIndex === 1 || (root.pageIndex === 2 && root.workspaceReturnPage === 1)
                     onClicked: root.pageIndex = 1
-                }
-
-                SidebarButton {
-                    Layout.fillWidth: true
-                    text: I18n.t("Jobs")
-                    selected: root.pageIndex === 2 || (root.pageIndex === 3 && root.detailReturnPage === 2)
-                    onClicked: {
-                        controller.refreshJobs()
-                        root.pageIndex = 2
-                    }
                 }
 
                 Item {
@@ -171,10 +163,13 @@ ApplicationWindow {
                     Layout.fillWidth: true
                     Layout.fillHeight: true
                     Layout.margins: 24
-                    onRequestNewProject: projectSetupDialog.open()
+                    onRequestNewProject: {
+                        root.workspaceReturnPage = 0
+                        projectSetupDialog.open()
+                    }
                     onOpenProject: {
-                        root.detailReturnPage = 0
-                        root.pageIndex = 3
+                        root.workspaceReturnPage = 0
+                        root.pageIndex = 2
                     }
                 }
 
@@ -183,32 +178,17 @@ ApplicationWindow {
                     Layout.fillHeight: true
                     Layout.margins: 24
                     onOpenJobDetail: {
-                        root.detailReturnPage = 1
-                        root.pageIndex = 3
+                        root.workspaceReturnPage = 1
+                        root.pageIndex = 2
                     }
-                }
-
-                JobsPage {
-                    Layout.fillWidth: true
-                    Layout.fillHeight: true
-                    Layout.margins: 24
-                    onOpenJobDetail: {
-                        root.detailReturnPage = 2
-                        root.pageIndex = 3
-                    }
-                }
-
-                JobDetailPage {
-                    Layout.fillWidth: true
-                    Layout.fillHeight: true
-                    Layout.margins: 24
-                    onBackToJobs: root.pageIndex = root.detailReturnPage
                 }
 
                 CreateJobPage {
                     Layout.fillWidth: true
                     Layout.fillHeight: true
                     Layout.margins: 24
+                    onRequestReviewTranslation: translationReviewDialog.open()
+                    onRequestBack: root.pageIndex = root.workspaceReturnPage
                 }
 
             }

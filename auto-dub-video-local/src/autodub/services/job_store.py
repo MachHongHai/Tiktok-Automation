@@ -55,6 +55,7 @@ def create_job(job_id: str, original_filename: str, config: JobConfig, video_ext
         original_video_volume=config.original_video_volume,
         project_name=config.project_name,
         project_directory=config.project_directory,
+        review_approved=config.review_approved,
         status="pending",
         progress=0,
         step="pending",

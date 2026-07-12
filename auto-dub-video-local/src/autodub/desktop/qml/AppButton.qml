@@ -34,14 +34,14 @@ Button {
         radius: Theme.radiusSmall
         color: !root.enabled ? Theme.surfaceMuted
             : root.tone === "primary" ? (root.down ? "#3ca99a" : root.hovered ? Theme.interactiveHover : Theme.interactive)
-            : root.tone === "ghost" ? (root.hovered ? Theme.surfaceMuted : "#00000000")
+            : root.tone === "ghost" ? (root.down ? Theme.surfaceStrong : root.hovered ? Theme.surfaceMuted : Theme.surfaceElevated)
             : root.tone === "danger" ? (root.hovered ? Theme.dangerMuted : "#00000000")
             : root.down ? Theme.surfaceStrong
             : root.hovered ? Theme.surfaceMuted
             : Theme.surfaceElevated
-        border.width: root.tone === "primary" || root.tone === "ghost" ? 0 : 1
+        border.width: root.tone === "primary" ? 0 : 1
         border.color: !root.enabled ? Theme.outline
             : root.tone === "danger" ? Theme.danger
-            : root.activeFocus ? Theme.interactive : Theme.outline
+            : root.activeFocus || (root.tone === "ghost" && root.hovered) ? Theme.interactive : Theme.outline
     }
 }

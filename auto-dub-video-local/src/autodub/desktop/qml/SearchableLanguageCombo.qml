@@ -10,6 +10,7 @@ Item {
     property var filteredModel: options
     property string selectedCode: ""
     property string placeholderText: qsTr("Search language")
+    property bool interactionActive: false
     signal selected(string code)
 
     implicitHeight: field.implicitHeight
@@ -70,19 +71,33 @@ Item {
             font.pixelSize: Theme.caption
             textFormat: Text.PlainText
         }
-        onActiveFocusChanged: {
-            if (activeFocus) {
-                selectAll()
-                popup.open()
-            }
-        }
         onTextChanged: {
             root.refreshFilter()
-            if (!popup.opened) {
+            if (root.interactionActive && !popup.opened) {
                 popup.open()
             }
         }
         onPreeditTextChanged: root.refreshFilter()
+
+        Keys.onPressed: {
+            if (!root.interactionActive) {
+                root.interactionActive = true
+                field.selectAll()
+            }
+            if (!popup.opened) {
+                popup.open()
+            }
+        }
+
+        TapHandler {
+            acceptedButtons: Qt.LeftButton
+            onTapped: {
+                root.interactionActive = true
+                field.forceActiveFocus()
+                field.selectAll()
+                popup.open()
+            }
+        }
 
         Binding {
             target: field
@@ -94,6 +109,7 @@ Item {
 
     Popup {
         id: popup
+        objectName: "languageSearchPopup"
         y: field.height + 4
         width: field.width
         height: Math.min(320, Math.max(72, list.contentHeight + 12))
@@ -103,7 +119,10 @@ Item {
         z: 100
         closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutsideParent
         onOpened: root.refreshFilter()
-        onClosed: field.text = root.labelFor(root.selectedCode)
+        onClosed: {
+            root.interactionActive = false
+            field.text = root.labelFor(root.selectedCode)
+        }
 
         background: Rectangle {
             color: Theme.surfaceElevated

@@ -14,8 +14,8 @@ def create_desktop_job(video_path: str, config: JobConfig, project_name: str = "
     if ext not in SUPPORTED_VIDEO_EXTENSIONS:
         supported = ", ".join(sorted(SUPPORTED_VIDEO_EXTENSIONS))
         raise ValueError(f"Unsupported video extension '{ext}'. Supported: {supported}.")
-    if config.mode != "A":
-        raise ValueError("Only full-auto jobs are supported.")
+    if config.mode not in {"A", "review"}:
+        raise ValueError(f"Unsupported workflow: {config.mode}")
 
     project_name = project_name.strip()
     project_directory = project_directory.strip()

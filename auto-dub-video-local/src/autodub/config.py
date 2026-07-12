@@ -26,6 +26,7 @@ if os.path.exists(BIN_DIR):
 
 WHISPER_MODEL = os.getenv("WHISPER_MODEL", "small")
 HYMT2_MODEL = os.getenv("HYMT2_MODEL", "tencent/Hy-MT2-1.8B")
+TTS_MAX_CONCURRENCY = max(1, min(4, int(os.getenv("TTS_MAX_CONCURRENCY", "3"))))
 
 
 def _resolve_runtime_path(value: str | None, default: str) -> str:

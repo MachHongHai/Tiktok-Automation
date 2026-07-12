@@ -5,12 +5,15 @@ from typing import Dict, List, Set
 
 
 _cancelled_jobs: Set[str] = set()
+_paused_jobs: Set[str] = set()
 _active_processes: Dict[str, List[subprocess.Popen]] = {}
 
 
 def start_job(job_id: str):
     if job_id in _cancelled_jobs:
         _cancelled_jobs.remove(job_id)
+    if job_id in _paused_jobs:
+        _paused_jobs.remove(job_id)
     _active_processes[job_id] = []
 
 
@@ -50,6 +53,15 @@ def cancel_job(job_id: str):
                 _kill_process_tree(process)
         _active_processes[job_id] = []
     time.sleep(0.1)
+
+
+def pause_job(job_id: str):
+    _paused_jobs.add(job_id)
+    cancel_job(job_id)
+
+
+def is_paused(job_id: str) -> bool:
+    return job_id in _paused_jobs
 
 
 def is_cancelled(job_id: str) -> bool:

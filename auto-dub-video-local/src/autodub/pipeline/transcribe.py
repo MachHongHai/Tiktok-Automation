@@ -1,11 +1,42 @@
 import gc
 import json
+import threading
 
 import torch
 import whisperx
 
 from autodub.config import WHISPER_MODEL
 from autodub.services.job_store import log_to_job
+
+
+_MODEL_LOCK = threading.Lock()
+_WARM_ASR_MODEL = None
+_WARM_DEVICE = None
+
+
+def warm_whisperx_model():
+    """Load the ASR model once in the background so the first job starts promptly."""
+    global _WARM_ASR_MODEL, _WARM_DEVICE
+    with _MODEL_LOCK:
+        if _WARM_ASR_MODEL is not None:
+            return True
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        compute_type = "float16" if device == "cuda" else "int8"
+        _WARM_ASR_MODEL = whisperx.load_model(WHISPER_MODEL, device, compute_type=compute_type)
+        _WARM_DEVICE = device
+        return True
+
+
+def release_warm_whisperx_model():
+    global _WARM_ASR_MODEL, _WARM_DEVICE
+    with _MODEL_LOCK:
+        if _WARM_ASR_MODEL is not None:
+            del _WARM_ASR_MODEL
+        _WARM_ASR_MODEL = None
+        _WARM_DEVICE = None
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
 
 
 def _release_cuda(job_id: str, stage: str) -> None:
@@ -23,13 +54,20 @@ def transcribe(audio_path: str, output_json_path: str, source_language: str, job
     log_to_job(job_id, f"WhisperX device: {device}, compute type: {compute_type}.")
 
     asr_model = None
+    using_warm_model = False
     align_model = None
     audio = None
     try:
         log_to_job(job_id, "Loading WhisperX transcription model.")
         if progress_callback:
             progress_callback("loading_model", "Loading WhisperX speech model")
-        asr_model = whisperx.load_model(WHISPER_MODEL, device, compute_type=compute_type)
+        with _MODEL_LOCK:
+            if _WARM_ASR_MODEL is not None and _WARM_DEVICE == device:
+                asr_model = _WARM_ASR_MODEL
+                using_warm_model = True
+                log_to_job(job_id, "Reusing warmed WhisperX speech model.")
+            else:
+                asr_model = whisperx.load_model(WHISPER_MODEL, device, compute_type=compute_type)
         audio = whisperx.load_audio(audio_path)
         language = None if source_language == "auto" else source_language
         log_to_job(job_id, f"Running transcription (source language: {source_language}).")
@@ -41,9 +79,10 @@ def transcribe(audio_path: str, output_json_path: str, source_language: str, job
         if progress_callback:
             progress_callback("transcribed", f"Detected {detected_language or 'unknown'} speech")
 
-        del asr_model
-        asr_model = None
-        _release_cuda(job_id, "transcription")
+        if not using_warm_model:
+            del asr_model
+            asr_model = None
+            _release_cuda(job_id, "transcription")
 
         aligned_segments = result["segments"]
         try:
@@ -90,7 +129,7 @@ def transcribe(audio_path: str, output_json_path: str, source_language: str, job
             progress_callback("saved", f"Prepared {len(output_segments)} subtitle segments")
         return output_segments, detected_language
     finally:
-        if asr_model is not None:
+        if asr_model is not None and not using_warm_model:
             del asr_model
         if align_model is not None:
             del align_model
