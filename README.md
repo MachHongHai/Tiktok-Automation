@@ -15,9 +15,9 @@ Auto Dub Video Local là công cụ desktop Windows dùng để tạo video đã
 - Cache checkpoint, tạo phụ đề, ghép audio và render video chạy local.
 - Video nguồn, audio trung gian, model cache, log và output không bị gửi đến dịch vụ AI cloud của ứng dụng.
 
-Ứng dụng vẫn dùng AI theo nghĩa kỹ thuật, nhưng model ASR và dịch được chạy **trên máy của người dùng**, không phải kiểu gửi video cho một AI cloud xử lý rồi nhận kết quả. Nhờ đó không phát sinh chi phí theo phút video hoặc theo số lần dịch, đồng thời dữ liệu nhạy cảm ở lại trên máy.
+Ứng dụng được chạy **trên máy của người dùng**, không phải kiểu gửi video cho một AI cloud xử lý rồi nhận kết quả. Nhờ đó không phát sinh chi phí theo phút video hoặc theo số lần dịch, đồng thời dữ liệu nhạy cảm ở lại trên máy.
 
-Riêng Edge TTS là bước tạo giọng cần Internet. Text của các câu đã dịch được gửi tới dịch vụ Edge TTS để sinh audio; tool không cần API key trả phí cho bước này, tuy nhiên khả năng hoạt động, giới hạn tốc độ và điều khoản sử dụng phụ thuộc nhà cung cấp Edge TTS.
+Riêng Edge TTS là bước tạo giọng cần Internet. Text của các câu đã dịch được gửi tới dịch vụ Edge TTS để sinh audio; tool không cần API key trả phí cho bước này.
 
 ## Chức năng
 
