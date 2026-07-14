@@ -92,7 +92,7 @@ def process_job_sync(job_id: str):
         temp_audio_wav = os.path.join(job_dir, "temp", "audio.wav")
         source_segments_json = os.path.join(job_dir, "temp", "source_segments.json")
         translation_signature = _signature(
-            _file_state(video_input), "auto-per-subtitle-v2", "hymt2-windowed-context-greedy-v5",
+            _file_state(video_input), "auto-per-subtitle-v2", "hymt2-multilingual-context-greedy-v6",
             job.target_language, job.enable_audio_separation, "hymt2"
         )
 

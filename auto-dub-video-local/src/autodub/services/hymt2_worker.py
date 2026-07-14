@@ -56,11 +56,11 @@ def _build_prompt(
         before_start = _context_before_start(texts, index)
         after_end = _context_after_end(texts, index + 1)
         previous_context = "\n".join(
-            f"P{index - context_index}: {texts[context_index]}"
+            f"P{index - context_index} [{source_languages[context_index]}]: {texts[context_index]}"
             for context_index in range(before_start, index)
         )
         following_context = "\n".join(
-            f"N{context_index - index}: {texts[context_index]}"
+            f"N{context_index - index} [{source_languages[context_index]}]: {texts[context_index]}"
             for context_index in range(index + 1, after_end)
         )
         context_parts = [
@@ -230,37 +230,54 @@ def translate(payload: dict) -> list[str]:
     if not isinstance(source_languages, list) or len(source_languages) != len(texts):
         source_languages = [payload.get("source_language") or "English"] * len(texts)
     target_language_name = payload["target_language_name"]
+    target_key = target_language_name.casefold().strip()
+    requires_translation = [
+        source_language.casefold().strip() != target_key
+        for source_language in source_languages
+    ]
+    if not any(requires_translation):
+        _emit_event({"event": "progress", "current": len(texts), "total": len(texts)})
+        return list(texts)
+
     model, tokenizer, torch, device = _model_runtime()
-    translations = []
+    translations = [None] * len(texts)
     for batch_start, batch_end in _inference_batches(texts):
         _emit_event(
             {
                 "event": "batch_started",
                 "start": batch_start + 1,
                 "end": batch_end,
-                "completed": len(translations),
+                "completed": batch_start,
                 "total": len(texts),
             }
         )
-        prompts = _build_translation_prompts(
-            texts,
-            source_languages,
-            batch_start,
-            batch_end,
-            target_language_name,
-        )
-        translations.extend(
-            _translate_prompt_batch(
+        translated_indices = [
+            index
+            for index in range(batch_start, batch_end)
+            if requires_translation[index]
+        ]
+        for index in range(batch_start, batch_end):
+            if not requires_translation[index]:
+                translations[index] = texts[index]
+
+        if translated_indices:
+            prompts = [
+                _build_prompt(texts, source_languages, index, target_language_name)
+                for index in translated_indices
+            ]
+            batch_translations = _translate_prompt_batch(
                 model,
                 tokenizer,
                 torch,
                 device,
                 prompts,
-                texts[batch_start:batch_end],
+                [texts[index] for index in translated_indices],
             )
-        )
-        _emit_event({"event": "progress", "current": len(translations), "total": len(texts)})
-    if len(translations) != len(texts):
+            for index, translated_text in zip(translated_indices, batch_translations):
+                translations[index] = translated_text
+
+        _emit_event({"event": "progress", "current": batch_end, "total": len(texts)})
+    if any(not isinstance(text, str) for text in translations):
         raise RuntimeError("HY-MT2 inference did not return one translation per subtitle prompt.")
     return translations
 

@@ -139,8 +139,8 @@ class MixedLanguagePipelineTests(unittest.TestCase):
             "Vietnamese",
         )
         self.assertIn("[Background Information - reference only]", prompt)
-        self.assertIn("[Previous Subtitles]\nP1: Hello", prompt)
-        self.assertIn("[Following Subtitles]\nN1: Fine.", prompt)
+        self.assertIn("[Previous Subtitles]\nP1 [English]: Hello", prompt)
+        self.assertIn("[Following Subtitles]\nN1 [English]: Fine.", prompt)
         self.assertIn("[End Background Information]", prompt)
         self.assertIn("[Source Text]\nHow are you?", prompt)
         self.assertIn("Translate only the [Source Text], not the background", prompt)
@@ -165,10 +165,10 @@ class MixedLanguagePipelineTests(unittest.TestCase):
             3,
             "Vietnamese",
         )
-        self.assertIn("P2: Honey details", focused_prompt)
-        self.assertIn("P1: Top 20%.", focused_prompt)
-        self.assertIn("N1: Top 10%.", focused_prompt)
-        self.assertIn("N2: Later context", focused_prompt)
+        self.assertIn("P2 [English]: Honey details", focused_prompt)
+        self.assertIn("P1 [English]: Top 20%.", focused_prompt)
+        self.assertIn("N1 [English]: Top 10%.", focused_prompt)
+        self.assertIn("N2 [English]: Later context", focused_prompt)
         self.assertLess(
             focused_prompt.index("[End Background Information]"),
             focused_prompt.rindex("[Source Text]\nBanana details"),
@@ -184,6 +184,44 @@ class MixedLanguagePipelineTests(unittest.TestCase):
         for number in (1, 2, 3, 5, 6, 7):
             self.assertIn(f"Line {number}", wide_prompt)
         self.assertNotIn("Line 8", wide_prompt)
+
+        mixed_prompt = _build_prompt(
+            ["Hello", "今日は特別なメニューがあります。", "¿Puedes hacerlo sin gluten?"],
+            ["English", "Japanese", "Spanish"],
+            1,
+            "Vietnamese",
+        )
+        self.assertIn("Source language: Japanese", mixed_prompt)
+        self.assertIn("P1 [English]: Hello", mixed_prompt)
+        self.assertIn("N1 [Spanish]: ¿Puedes hacerlo sin gluten?", mixed_prompt)
+
+    def test_hymt2_mixed_language_batch_keeps_target_language_segments(self):
+        captured_source_texts = []
+        original_runtime = hymt2_worker._model_runtime
+        original_translate_batch = hymt2_worker._translate_prompt_batch
+        original_emit = hymt2_worker._emit_event
+        hymt2_worker._model_runtime = lambda: (object(), object(), object(), "cpu")
+        hymt2_worker._translate_prompt_batch = (
+            lambda _model, _tokenizer, _torch, _device, _prompts, source_texts: (
+                captured_source_texts.extend(source_texts) or ["Xin chào", "Không gluten"]
+            )
+        )
+        hymt2_worker._emit_event = lambda _payload: None
+        try:
+            translated = hymt2_worker.translate(
+                {
+                    "texts": ["Hello", "Đã sẵn sàng", "Sin gluten"],
+                    "source_languages": ["English", "Vietnamese", "Spanish"],
+                    "target_language_name": "Vietnamese",
+                }
+            )
+        finally:
+            hymt2_worker._model_runtime = original_runtime
+            hymt2_worker._translate_prompt_batch = original_translate_batch
+            hymt2_worker._emit_event = original_emit
+
+        self.assertEqual(captured_source_texts, ["Hello", "Sin gluten"])
+        self.assertEqual(translated, ["Xin chào", "Đã sẵn sàng", "Không gluten"])
 
     def test_hymt2_worker_writes_response_and_progress_sidecar(self):
         with tempfile.TemporaryDirectory() as temp_dir:
