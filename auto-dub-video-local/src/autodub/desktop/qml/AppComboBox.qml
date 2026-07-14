@@ -1,3 +1,5 @@
+pragma ComponentBehavior: Bound
+
 import QtQuick
 import QtQuick.Controls.Basic
 import "."
@@ -7,47 +9,73 @@ ComboBox {
 
     implicitHeight: 42
     leftPadding: 12
-    rightPadding: 34
+    rightPadding: 38
     font.pixelSize: Theme.body
     activeFocusOnTab: true
+    Accessible.name: displayText
+
+    Component.onCompleted: voicePopup.close()
 
     contentItem: Text {
         text: root.displayText
-        color: Theme.text
+        color: root.enabled ? Theme.text : Theme.textDisabled
         font: root.font
+        fontSizeMode: Text.HorizontalFit
+        minimumPixelSize: Theme.label
         verticalAlignment: Text.AlignVCenter
         textFormat: Text.PlainText
-        elide: Text.ElideRight
+        elide: Text.ElideNone
     }
 
-    indicator: Text {
+    indicator: AppIcon {
         x: root.width - width - 12
         anchors.verticalCenter: parent.verticalCenter
-        text: "v"
-        color: Theme.textMuted
-        font.pixelSize: Theme.caption
-        textFormat: Text.PlainText
+        width: Theme.icon
+        height: Theme.icon
+        glyph: root.popup.opened ? "\uE70E" : "\uE70D"
+        iconColor: root.enabled ? Theme.textMuted : Theme.textDisabled
+        iconSize: Theme.iconSmall
     }
 
     background: Rectangle {
         radius: Theme.radiusSmall
-        color: root.hovered ? Theme.surfaceStrong : Theme.surfaceElevated
-        border.width: 1
-        border.color: root.activeFocus ? Theme.interactive : Theme.outline
+        color: root.enabled && root.hovered ? Theme.surfaceMuted : Theme.input
+        border.width: root.activeFocus || root.popup.opened ? 2 : 1
+        border.color: root.activeFocus || root.popup.opened ? Theme.focus : Theme.outline
+
+        Behavior on color {
+            ColorAnimation { duration: Theme.motionFast }
+        }
+        Behavior on border.color {
+            ColorAnimation { duration: Theme.motionFast }
+        }
     }
 
     popup: Popup {
-        y: root.height + 5
+        id: voicePopup
+
+        y: root.height + 6
         width: root.width
-        height: Math.min(280, contentItem.implicitHeight + 12)
+        height: Math.min(292, Math.max(52, voiceList.contentHeight + 12))
         padding: 6
         closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutsideParent
 
+        onOpened: voiceList.currentIndex = root.highlightedIndex
+
+        enter: Transition {
+            NumberAnimation { property: "opacity"; from: 0; to: 1; duration: Theme.motionFast }
+        }
+        exit: Transition {
+            NumberAnimation { property: "opacity"; from: 1; to: 0; duration: Theme.motionFast }
+        }
+
         contentItem: ListView {
+            id: voiceList
+
             clip: true
-            implicitHeight: contentHeight
-            model: root.popup.visible ? root.delegateModel : null
+            model: root.delegateModel
             currentIndex: root.highlightedIndex
+            reuseItems: true
             ScrollIndicator.vertical: ScrollIndicator {}
         }
 
@@ -60,30 +88,30 @@ ComboBox {
     }
 
     delegate: ItemDelegate {
-        width: root.width - 12
+        id: voiceDelegate
+
+        required property int index
+        required property var modelData
+
+        width: root.popup.width - 12
         height: 40
-        highlighted: root.highlightedIndex === index
+        highlighted: root.highlightedIndex === voiceDelegate.index
 
         contentItem: Text {
-            text: {
-                if (modelData === undefined || modelData === null) {
-                    return ""
-                }
-                if (root.textRole && typeof modelData === "object") {
-                    return modelData[root.textRole] || ""
-                }
-                return String(modelData)
-            }
-            color: highlighted ? Theme.interactive : Theme.text
+            text: root.textAt(voiceDelegate.index)
+            color: voiceDelegate.highlighted ? Theme.interactive : Theme.text
             font.pixelSize: Theme.body
+            fontSizeMode: Text.HorizontalFit
+            minimumPixelSize: Theme.label
+            font.weight: voiceDelegate.highlighted ? Font.DemiBold : Font.Normal
             verticalAlignment: Text.AlignVCenter
             textFormat: Text.PlainText
-            elide: Text.ElideRight
+            elide: Text.ElideNone
         }
 
         background: Rectangle {
             radius: Theme.radiusSmall
-            color: highlighted ? Theme.interactiveMuted : "#00000000"
+            color: voiceDelegate.highlighted ? Theme.interactiveMuted : "transparent"
         }
     }
 }

@@ -6,12 +6,12 @@ Rectangle {
     id: root
 
     required property int index
-    required property string projectName
-    required property string projectType
-    required property int jobCount
+    required property string fileName
     required property string status
     required property int progress
     required property string thumbnailSource
+    required property string videoSize
+    required property bool subtitleOverride
 
     signal activated()
 
@@ -21,22 +21,19 @@ Rectangle {
         : status === "failed" ? I18n.t("Failed")
         : status === "cancelled" ? I18n.t("Cancelled")
         : status === "paused" ? I18n.t("Paused")
-        : status === "awaiting_review" ? I18n.t("Review needed")
         : status
     readonly property color statusColor: status === "done" ? Theme.success
         : status === "failed" || status === "cancelled" ? Theme.danger
         : status === "processing" ? Theme.warning
-        : status === "awaiting_review" ? Theme.blue
         : Theme.textMuted
 
-    height: Math.round(width * 0.58 + 82)
     radius: Theme.radius
     color: hoverHandler.hovered ? Theme.surfaceMuted : Theme.surface
     border.width: activeFocus ? 2 : 1
     border.color: activeFocus ? Theme.focus : hoverHandler.hovered ? Theme.outlineStrong : Theme.outline
     activeFocusOnTab: true
     Accessible.role: Accessible.Button
-    Accessible.name: projectName
+    Accessible.name: fileName
     scale: tapHandler.pressed ? 0.99 : 1
 
     Keys.onReturnPressed: root.activated()
@@ -61,7 +58,7 @@ Rectangle {
 
         Rectangle {
             Layout.fillWidth: true
-            Layout.preferredHeight: Math.round(root.width * 0.56)
+            Layout.preferredHeight: Math.round(root.width * 0.58)
             radius: Theme.radius
             color: Theme.video
             clip: true
@@ -70,73 +67,60 @@ Rectangle {
                 anchors.fill: parent
                 source: root.thumbnailSource
                 sourceSize.width: Math.round(root.width * 2)
-                sourceSize.height: Math.round(root.width * 1.12)
+                sourceSize.height: Math.round(root.width * 1.16)
                 fillMode: Image.PreserveAspectCrop
                 asynchronous: true
                 visible: status === Image.Ready
-
-                Behavior on opacity {
-                    NumberAnimation { duration: Theme.motionStandard }
-                }
             }
 
-            Column {
+            AppIcon {
                 anchors.centerIn: parent
-                spacing: Theme.space8
                 visible: root.thumbnailSource.length === 0
-
-                AppIcon {
-                    anchors.horizontalCenter: parent.horizontalCenter
-                    width: 28
-                    height: 28
-                    glyph: "\uE714"
-                    iconColor: Theme.textSubtle
-                    iconSize: Theme.iconLarge
-                }
-
-                Text {
-                    text: I18n.t("No preview")
-                    color: Theme.textSubtle
-                    font.pixelSize: Theme.caption
-                    textFormat: Text.PlainText
-                }
+                width: 28
+                height: 28
+                glyph: "\uE714"
+                iconColor: Theme.textSubtle
+                iconSize: Theme.iconLarge
             }
 
-            Rectangle {
+            Row {
                 anchors.top: parent.top
-                anchors.left: parent.left
-                anchors.margins: Theme.space8
-                visible: root.projectType === "batch"
-                implicitWidth: batchLabel.implicitWidth + 16
-                implicitHeight: 24
-                radius: Theme.radiusTiny
-                color: Theme.surfaceStrong
-
-                Text {
-                    id: batchLabel
-                    anchors.centerIn: parent
-                    text: qsTr("%1 %2").arg(root.jobCount).arg(I18n.t("videos"))
-                    color: Theme.text
-                    font.pixelSize: Theme.label
-                    font.weight: Font.DemiBold
-                    textFormat: Text.PlainText
-                }
-            }
-
-            Rectangle {
-                anchors.left: parent.left
                 anchors.right: parent.right
-                anchors.bottom: parent.bottom
-                height: 3
-                color: Theme.surfaceStrong
+                anchors.margins: Theme.space8
+                spacing: Theme.space4
 
                 Rectangle {
-                    width: parent.width * Math.max(0, Math.min(100, root.progress)) / 100
-                    height: parent.height
-                    color: root.progress >= 100 ? Theme.success : Theme.interactive
+                    width: sizeLabel.implicitWidth + Theme.space12
+                    height: 26
+                    radius: Theme.radiusSmall
+                    color: Theme.scrim
 
-                    Behavior on width {
-                        NumberAnimation { duration: Theme.motionStandard; easing.type: Easing.OutCubic }
+                    Text {
+                        id: sizeLabel
+                        anchors.centerIn: parent
+                        text: I18n.t(root.videoSize)
+                        color: Theme.textOnDark
+                        font.pixelSize: Theme.label
+                        font.weight: Font.DemiBold
+                        textFormat: Text.PlainText
+                    }
+                }
+
+                Rectangle {
+                    visible: root.subtitleOverride
+                    width: customLabel.implicitWidth + Theme.space12
+                    height: 26
+                    radius: Theme.radiusSmall
+                    color: Theme.interactive
+
+                    Text {
+                        id: customLabel
+                        anchors.centerIn: parent
+                        text: I18n.t("Custom")
+                        color: Theme.textOnAccent
+                        font.pixelSize: Theme.label
+                        font.weight: Font.DemiBold
+                        textFormat: Text.PlainText
                     }
                 }
             }
@@ -145,17 +129,17 @@ Rectangle {
         ColumnLayout {
             Layout.fillWidth: true
             Layout.fillHeight: true
-            Layout.leftMargin: 14
-            Layout.rightMargin: 14
-            Layout.topMargin: 11
-            Layout.bottomMargin: 11
-            spacing: 7
+            Layout.leftMargin: Theme.space12
+            Layout.rightMargin: Theme.space12
+            Layout.topMargin: Theme.space8
+            Layout.bottomMargin: Theme.space8
+            spacing: Theme.space4
 
             Text {
                 Layout.fillWidth: true
-                text: root.projectName
+                text: root.fileName
                 color: Theme.text
-                font.pixelSize: Theme.bodyLarge
+                font.pixelSize: Theme.body
                 font.weight: Font.DemiBold
                 textFormat: Text.PlainText
                 elide: Text.ElideRight
@@ -174,9 +158,7 @@ Rectangle {
 
                 Text {
                     Layout.fillWidth: true
-                    text: root.projectType === "batch"
-                        ? qsTr("%1 - %2").arg(root.jobCount).arg(I18n.t("videos"))
-                        : root.statusLabel
+                    text: root.statusLabel
                     color: Theme.textMuted
                     font.pixelSize: Theme.caption
                     textFormat: Text.PlainText
@@ -189,14 +171,6 @@ Rectangle {
                     font.pixelSize: Theme.caption
                     font.weight: Font.DemiBold
                     textFormat: Text.PlainText
-                }
-
-                AppIcon {
-                    Layout.preferredWidth: Theme.icon
-                    Layout.preferredHeight: Theme.icon
-                    glyph: "\uE76C"
-                    iconColor: hoverHandler.hovered ? Theme.text : Theme.textSubtle
-                    iconSize: Theme.iconSmall
                 }
             }
         }

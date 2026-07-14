@@ -14,22 +14,24 @@ Rectangle {
 
     signal activated()
 
-    readonly property string statusLabel: status === "pending" ? qsTr("Queued")
-        : status === "processing" ? qsTr("Processing")
-        : status === "done" ? qsTr("Complete")
-        : status === "failed" ? qsTr("Failed")
-        : status === "cancelled" ? qsTr("Cancelled")
+    readonly property string statusLabel: status === "pending" ? I18n.t("Queued")
+        : status === "processing" ? I18n.t("Processing")
+        : status === "done" ? I18n.t("Complete")
+        : status === "failed" ? I18n.t("Failed")
+        : status === "cancelled" ? I18n.t("Cancelled")
+        : status === "paused" ? I18n.t("Paused")
         : status
 
     width: ListView.view ? ListView.view.width : 640
-    height: 92
+    height: 82
     radius: Theme.radiusSmall
     color: hoverHandler.hovered ? Theme.surfaceMuted : Theme.surfaceElevated
     border.width: activeFocus ? 2 : 1
-    border.color: activeFocus ? Theme.interactive : Theme.outline
+    border.color: activeFocus ? Theme.focus : hoverHandler.hovered ? Theme.outlineStrong : Theme.outline
     activeFocusOnTab: true
     Accessible.role: Accessible.Button
-    Accessible.name: qsTr("Open job %1").arg(fileName)
+    Accessible.name: I18n.t("Open job") + " " + fileName
+    scale: tapHandler.pressed ? 0.995 : 1
 
     Keys.onReturnPressed: root.activated()
     Keys.onSpacePressed: root.activated()
@@ -40,6 +42,7 @@ Rectangle {
     }
 
     TapHandler {
+        id: tapHandler
         onTapped: {
             root.forceActiveFocus()
             root.activated()
@@ -48,48 +51,47 @@ Rectangle {
 
     RowLayout {
         anchors.fill: parent
-        anchors.margins: 12
-        spacing: 14
+        anchors.margins: 10
+        spacing: Theme.space12
 
         Rectangle {
-            Layout.preferredWidth: 112
-            Layout.preferredHeight: 64
+            Layout.preferredWidth: 96
+            Layout.preferredHeight: 58
             radius: Theme.radiusSmall
-            color: "#090a0c"
-            border.width: 1
-            border.color: Theme.outline
+            color: Theme.video
             clip: true
 
             Image {
                 anchors.fill: parent
                 source: root.thumbnailSource
-                sourceSize.width: 224
-                sourceSize.height: 128
+                sourceSize.width: 192
+                sourceSize.height: 116
                 fillMode: Image.PreserveAspectCrop
                 asynchronous: true
                 visible: status === Image.Ready
             }
 
-            Text {
+            AppIcon {
                 anchors.centerIn: parent
                 visible: root.thumbnailSource.length === 0
-                text: "▶"
-                color: Theme.textMuted
-                font.pixelSize: Theme.h2
-                textFormat: Text.PlainText
+                width: 24
+                height: 24
+                glyph: "\uE714"
+                iconColor: Theme.textSubtle
+                iconSize: Theme.icon
             }
         }
 
         ColumnLayout {
             Layout.fillWidth: true
-            spacing: 6
+            spacing: 5
 
             Text {
                 Layout.fillWidth: true
                 text: root.fileName
                 color: Theme.text
                 font.pixelSize: Theme.body
-                font.weight: Font.Medium
+                font.weight: Font.DemiBold
                 textFormat: Text.PlainText
                 elide: Text.ElideRight
             }
@@ -105,8 +107,8 @@ Rectangle {
         }
 
         ColumnLayout {
-            Layout.preferredWidth: 210
-            spacing: 8
+            Layout.preferredWidth: 230
+            spacing: Theme.space8
 
             RowLayout {
                 Layout.fillWidth: true
@@ -121,6 +123,7 @@ Rectangle {
                     text: qsTr("%1%").arg(root.progress)
                     color: Theme.textMuted
                     font.pixelSize: Theme.caption
+                    font.weight: Font.DemiBold
                     horizontalAlignment: Text.AlignRight
                     textFormat: Text.PlainText
                 }
@@ -132,11 +135,25 @@ Rectangle {
             }
         }
 
-        Text {
-            text: ">"
-            color: Theme.textSubtle
-            font.pixelSize: Theme.body
-            textFormat: Text.PlainText
+        AppIcon {
+            Layout.preferredWidth: Theme.icon
+            Layout.preferredHeight: Theme.icon
+            glyph: "\uE76C"
+            iconColor: hoverHandler.hovered ? Theme.text : Theme.textSubtle
+            iconSize: Theme.iconSmall
         }
+    }
+
+    transform: Translate {
+        x: hoverHandler.hovered ? 2 : 0
+        Behavior on x {
+            NumberAnimation { duration: Theme.motionFast; easing.type: Easing.OutCubic }
+        }
+    }
+    Behavior on color {
+        ColorAnimation { duration: Theme.motionFast }
+    }
+    Behavior on scale {
+        NumberAnimation { duration: Theme.motionFast; easing.type: Easing.OutCubic }
     }
 }

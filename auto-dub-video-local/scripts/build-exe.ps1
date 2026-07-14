@@ -3,8 +3,10 @@ $Root = Split-Path -Parent $PSScriptRoot
 $Python = Join-Path $Root ".venv\Scripts\python.exe"
 
 if (!(Test-Path $Python)) {
-  $Python = "python"
+  throw "Project environment is missing. Run scripts\install-desktop-env.ps1 first."
 }
+
+& $Python (Join-Path $PSScriptRoot "verify-runtime.py") --for-build
 
 $ArgsList = @(
   "-m", "PyInstaller",
@@ -29,9 +31,7 @@ $ExcludedModules = @(
   "ipywidgets",
   "jupyter",
   "jupyterlab",
-  "matplotlib",
   "notebook",
-  "pandas",
   "plotly",
   "pytest",
   "sklearn",

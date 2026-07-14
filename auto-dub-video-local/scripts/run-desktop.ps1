@@ -3,7 +3,13 @@ $Root = Split-Path -Parent $PSScriptRoot
 $Python = Join-Path $Root ".venv\Scripts\python.exe"
 
 if (!(Test-Path $Python)) {
-  $Python = "python"
+  throw "Project environment is missing. Run scripts\install-desktop-env.ps1 first."
 }
 
-& $Python (Join-Path $Root "autodub_desktop.py")
+$env:PYTHONUTF8 = "1"
+Push-Location $Root
+try {
+  & $Python (Join-Path $Root "autodub_desktop.py")
+} finally {
+  Pop-Location
+}

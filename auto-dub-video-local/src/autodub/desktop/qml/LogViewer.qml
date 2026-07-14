@@ -6,10 +6,10 @@ Rectangle {
     id: root
 
     property string text: ""
-    property string emptyText: qsTr("No logs loaded.")
+    property string emptyText: I18n.t("No logs loaded.")
 
     radius: Theme.radiusSmall
-    color: "#0c0e11"
+    color: Theme.codeSurface
     border.color: Theme.outline
     border.width: 1
 
@@ -23,7 +23,8 @@ Rectangle {
         anchors.margins: 14
         clip: true
         contentWidth: width
-        contentHeight: logText.paintedHeight
+        contentHeight: Math.max(height, logText.paintedHeight)
+        boundsBehavior: Flickable.StopAtBounds
 
         function scrollToBottom() {
             programmaticScroll = true
@@ -33,14 +34,12 @@ Rectangle {
 
         onMovementStarted: followTail = false
         onContentYChanged: {
-            if (!programmaticScroll) {
+            if (!programmaticScroll)
                 followTail = contentY >= contentHeight - height - 8
-            }
         }
         onContentHeightChanged: {
-            if (followTail) {
+            if (followTail)
                 Qt.callLater(scrollToBottom)
-            }
         }
 
         TextEdit {
@@ -51,14 +50,16 @@ Rectangle {
             selectByMouse: true
             text: root.text || root.emptyText
             wrapMode: TextEdit.Wrap
-            color: root.text ? "#cad3df" : Theme.textSubtle
-            selectedTextColor: Theme.sidebar
+            color: root.text ? Theme.codeText : Theme.textSubtle
+            selectedTextColor: Theme.textOnAccent
             selectionColor: Theme.interactive
             font.family: "Cascadia Mono"
-            font.pixelSize: 13
+            font.pixelSize: 12
             textFormat: TextEdit.PlainText
         }
 
-        ScrollBar.vertical: ScrollBar {}
+        ScrollBar.vertical: ScrollBar {
+            policy: ScrollBar.AsNeeded
+        }
     }
 }

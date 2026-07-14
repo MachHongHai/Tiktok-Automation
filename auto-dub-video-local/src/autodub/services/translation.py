@@ -3,13 +3,18 @@ import os
 import queue
 import subprocess
 import sys
-import tempfile
 import threading
 import time
+import uuid
 
-from autodub.core.paths import project_root
+from autodub.core.paths import is_frozen, project_root
 from autodub.pipeline.job_manager import register_process, unregister_process
-from autodub.services.job_store import get_job_dir, log_to_job
+from autodub.services.job_store import log_to_job
+
+try:
+    from transformers.models.whisper.tokenization_whisper import LANGUAGES as WHISPER_LANGUAGE_NAMES
+except ImportError:  # pragma: no cover - transformers is a runtime dependency.
+    WHISPER_LANGUAGE_NAMES = {}
 
 
 LANGUAGE_NAMES = {
@@ -31,9 +36,15 @@ LANGUAGE_NAMES = {
     "fil": "Filipino",
 }
 
+_WORKER_LOCK = threading.RLock()
+_WORKER_PROCESS = None
+_WORKER_OUTPUT = None
+_WORKER_READER = None
+
 
 def language_name(language_code: str) -> str:
-    return LANGUAGE_NAMES.get(language_code, language_code or "Vietnamese")
+    normalized = (language_code or "").lower()
+    return LANGUAGE_NAMES.get(normalized, WHISPER_LANGUAGE_NAMES.get(normalized, normalized or "English").title())
 
 
 def translate_segments(
@@ -54,10 +65,11 @@ def translate_segments(
         segments = json.load(file)
 
     source_texts = [segment["text"] for segment in segments]
+    source_codes = [str(segment.get("language") or source_language or "en").lower() for segment in segments]
     translations = _translate_with_hymt2_worker(
         source_texts,
         job_id=job_id,
-        source_language=language_name(source_language),
+        source_languages=[language_name(code) for code in source_codes],
         target_language_name=target_language_name,
         progress_callback=progress_callback,
     )
@@ -77,6 +89,7 @@ def translate_segments(
                 "start": segment["start"],
                 "end": segment["end"],
                 "text": translated_text or source_text,
+                "source_language": source_codes[index - 1],
             }
         )
 
@@ -86,106 +99,209 @@ def translate_segments(
     return translated_segments
 
 
+def _worker_command() -> list[str]:
+    if is_frozen():
+        return [sys.executable, "--hymt2-worker", "--server"]
+    return [sys.executable, "-m", "autodub.services.hymt2_worker", "--server"]
+
+
+def _discard_hymt2_worker(process=None) -> None:
+    global _WORKER_PROCESS, _WORKER_OUTPUT, _WORKER_READER
+    if process is not None and process is not _WORKER_PROCESS:
+        return
+    _WORKER_PROCESS = None
+    _WORKER_OUTPUT = None
+    _WORKER_READER = None
+
+
+def _ensure_hymt2_worker():
+    global _WORKER_PROCESS, _WORKER_OUTPUT, _WORKER_READER
+    if _WORKER_PROCESS is not None and _WORKER_PROCESS.poll() is None and _WORKER_OUTPUT is not None:
+        return _WORKER_PROCESS, _WORKER_OUTPUT
+
+    _discard_hymt2_worker()
+    environment = os.environ.copy()
+    environment["PYTHONPATH"] = str(project_root() / "src") + os.pathsep + environment.get("PYTHONPATH", "")
+    environment["OMP_NUM_THREADS"] = "1"
+    environment["MKL_NUM_THREADS"] = "1"
+    environment["PYTHONFAULTHANDLER"] = "1"
+    process = subprocess.Popen(
+        _worker_command(),
+        cwd=str(project_root()),
+        env=environment,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        bufsize=1,
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+    )
+    output_queue = queue.Queue()
+
+    def read_output():
+        for line in process.stdout or []:
+            output_queue.put(line)
+
+    reader = threading.Thread(target=read_output, name="hymt2-worker-output", daemon=True)
+    reader.start()
+    _WORKER_PROCESS = process
+    _WORKER_OUTPUT = output_queue
+    _WORKER_READER = reader
+    return process, output_queue
+
+
+def shutdown_hymt2_worker() -> None:
+    """Release the persistent translation model when the desktop session closes."""
+    with _WORKER_LOCK:
+        process = _WORKER_PROCESS
+        if process is None:
+            return
+        try:
+            if process.poll() is None and process.stdin is not None:
+                process.stdin.write(json.dumps({"request_id": uuid.uuid4().hex, "command": "shutdown"}) + "\n")
+                process.stdin.flush()
+                process.wait(timeout=5)
+        except (BrokenPipeError, OSError, subprocess.TimeoutExpired):
+            if process.poll() is None:
+                process.kill()
+        finally:
+            _discard_hymt2_worker(process)
+
+
+def warm_hymt2_worker(status_callback=None) -> None:
+    """Load HY-MT2 once in the persistent worker before the first job arrives."""
+    with _WORKER_LOCK:
+        process, output_queue = _ensure_hymt2_worker()
+        request_id = uuid.uuid4().hex
+        try:
+            if process.stdin is None:
+                raise RuntimeError("HY-MT2 worker input channel is unavailable.")
+            process.stdin.write(json.dumps({"request_id": request_id, "command": "warm"}) + "\n")
+            process.stdin.flush()
+            deadline = time.monotonic() + 300
+            while True:
+                if time.monotonic() >= deadline:
+                    process.kill()
+                    _discard_hymt2_worker(process)
+                    raise RuntimeError("HY-MT2 warm-up timed out after 5 minutes.")
+                try:
+                    line = output_queue.get(timeout=0.25)
+                except queue.Empty:
+                    if process.poll() is not None:
+                        break
+                    continue
+                try:
+                    event = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if event.get("event") == "status" and status_callback:
+                    status_callback(str(event.get("detail", "Preparing HY-MT2 translation model")))
+                if event.get("event") != "response" or event.get("request_id") != request_id:
+                    continue
+                if event.get("error"):
+                    raise RuntimeError(event["error"])
+                if event.get("warmed"):
+                    return
+                raise RuntimeError("HY-MT2 worker returned an invalid warm-up response.")
+        except Exception:
+            if process.poll() is not None:
+                _discard_hymt2_worker(process)
+            raise
+
+        _discard_hymt2_worker(process)
+        raise RuntimeError(f"HY-MT2 worker stopped during warm-up with exit code {process.returncode}.")
+
+
 def _translate_with_hymt2_worker(
     texts: list[str],
     job_id: str,
-    source_language: str,
+    source_languages: list[str],
     target_language_name: str,
     progress_callback=None,
 ) -> list[str]:
     if not texts:
         return []
-
-    temp_dir = os.path.join(get_job_dir(job_id), "temp")
-    os.makedirs(temp_dir, exist_ok=True)
-    request_handle, request_path = tempfile.mkstemp(prefix="hymt2-request-", suffix=".json", dir=temp_dir)
-    os.close(request_handle)
-    response_path = request_path.replace("-request-", "-response-")
-    try:
-        with open(request_path, "w", encoding="utf-8") as file:
-            json.dump(
-                {
-                    "texts": texts,
-                    "source_language": source_language,
-                    "target_language_name": target_language_name,
-                },
-                file,
-                ensure_ascii=False,
-            )
-
-        environment = os.environ.copy()
-        environment["PYTHONPATH"] = str(project_root() / "src") + os.pathsep + environment.get("PYTHONPATH", "")
-        command = [
-            sys.executable,
-            "-m",
-            "autodub.services.hymt2_worker",
-            "--request",
-            request_path,
-            "--response",
-            response_path,
-        ]
-        log_to_job(job_id, "Starting isolated HY-MT2 translation worker.")
-        process = subprocess.Popen(
-            command,
-            cwd=str(project_root()),
-            env=environment,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            bufsize=1,
-            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-        )
-        register_process(job_id, process)
+    if len(source_languages) != len(texts):
+        raise ValueError("Each translation segment must have a source language.")
+    with _WORKER_LOCK:
+        process, output_queue = _ensure_hymt2_worker()
+        request_id = uuid.uuid4().hex
+        payload = {
+            "request_id": request_id,
+            "payload": {
+                "texts": texts,
+                "source_languages": source_languages,
+                "target_language_name": target_language_name,
+            },
+        }
         worker_output = []
-        output_queue = queue.Queue()
-
-        def read_output():
-            for line in process.stdout or []:
-                output_queue.put(line)
-
-        reader = threading.Thread(target=read_output, daemon=True)
-        reader.start()
-        deadline = time.monotonic() + 1800
+        log_to_job(job_id, "Sending translation request to persistent HY-MT2 worker.")
+        register_process(job_id, process)
         try:
-            while process.poll() is None or not output_queue.empty():
+            if process.stdin is None:
+                raise RuntimeError("HY-MT2 worker input channel is unavailable.")
+            process.stdin.write(json.dumps(payload, ensure_ascii=False) + "\n")
+            process.stdin.flush()
+            deadline = time.monotonic() + 1800
+            while True:
                 if time.monotonic() >= deadline:
                     process.kill()
-                    raise subprocess.TimeoutExpired(command, 1800)
+                    _discard_hymt2_worker(process)
+                    raise RuntimeError("HY-MT2 translation timed out after 30 minutes.")
                 try:
                     line = output_queue.get(timeout=0.25)
                 except queue.Empty:
+                    if process.poll() is not None:
+                        break
                     continue
                 worker_output.append(line)
                 try:
                     event = json.loads(line)
                 except json.JSONDecodeError:
                     continue
-                if event.get("event") == "progress" and progress_callback:
-                    progress_callback(int(event.get("current", 0)), int(event.get("total", 0)))
+                if event.get("event") == "status":
+                    detail = str(event.get("detail", "Preparing HY-MT2 translation"))
+                    log_to_job(job_id, detail)
+                    if progress_callback:
+                        progress_callback(0, 0, detail)
+                    continue
+                if event.get("event") == "batch_started":
+                    total = int(event.get("total", len(texts)))
+                    completed = int(event.get("completed", 0))
+                    detail = f"Translating subtitles {event.get('start', completed + 1)}-{event.get('end', completed)} of {total}"
+                    log_to_job(job_id, detail)
+                    if progress_callback:
+                        progress_callback(completed, total, detail)
+                    continue
+                if event.get("event") == "progress":
+                    current = int(event.get("current", 0))
+                    total = int(event.get("total", len(texts)))
+                    detail = f"Translated {current} of {total} subtitles"
+                    log_to_job(job_id, detail)
+                    if progress_callback:
+                        progress_callback(current, total, detail)
+                    continue
+                if event.get("event") != "response" or event.get("request_id") != request_id:
+                    continue
+                if event.get("error"):
+                    raise RuntimeError(event["error"])
+                translations = event.get("translations")
+                if not isinstance(translations, list) or len(translations) != len(texts) or not all(isinstance(text, str) for text in translations):
+                    raise RuntimeError("HY-MT2 worker returned an invalid translation result.")
+                log_to_job(job_id, "HY-MT2 translation completed; model stays warm for the next job.")
+                return translations
         finally:
-            reader.join(timeout=1)
             unregister_process(job_id, process)
-        if not os.path.exists(response_path):
-            details = "".join(worker_output).strip() or "no worker output"
-            raise RuntimeError(f"HY-MT2 worker stopped with exit code {process.returncode}: {details[-1000:]}")
 
-        with open(response_path, "r", encoding="utf-8") as file:
-            response = json.load(file)
-        if response.get("error"):
-            raise RuntimeError(response["error"])
-        translations = response.get("translations")
-        if not isinstance(translations, list) or len(translations) != len(texts) or not all(isinstance(text, str) for text in translations):
-            raise RuntimeError("HY-MT2 worker returned an invalid translation result.")
-        log_to_job(job_id, "HY-MT2 worker completed and released its model memory.")
-        return translations
-    except subprocess.TimeoutExpired as exc:
-        raise RuntimeError("HY-MT2 translation timed out after 30 minutes.") from exc
-    finally:
-        for path in (request_path, response_path):
-            try:
-                os.remove(path)
-            except FileNotFoundError:
-                pass
+        details = "".join(worker_output).strip() or "no worker output"
+        return_code = process.returncode
+        _discard_hymt2_worker(process)
+        if return_code == 3221225477:
+            details = (
+                "Native Torch crash (0xC0000005) while loading or running HY-MT2. "
+                f"Worker output: {details}"
+            )
+        raise RuntimeError(f"HY-MT2 worker stopped with exit code {return_code}: {details[-1000:]}")
 
 
 def clean_translation(text: str) -> str:
@@ -199,7 +315,6 @@ def is_suspicious_translation(source_text: str, translated_text: str, target_lan
         return True
     if len(source_content) >= 35 and len(translated_content) < max(6, len(source_content) // 10):
         return True
-
     required_script = {
         "Hindi": r"[\u0900-\u097f]",
         "Arabic": r"[\u0600-\u06ff]",

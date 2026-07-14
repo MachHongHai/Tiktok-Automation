@@ -8,34 +8,41 @@ CheckBox {
     spacing: 10
     font.pixelSize: Theme.body
     activeFocusOnTab: true
+    Accessible.name: text
 
     indicator: Rectangle {
         implicitWidth: 20
         implicitHeight: 20
         x: root.leftPadding
         y: parent.height / 2 - height / 2
-        radius: 5
-        color: root.checked ? Theme.interactive : Theme.surfaceElevated
-        border.width: 1
-        border.color: root.checked ? Theme.interactive : root.activeFocus ? Theme.interactive : Theme.outlineStrong
+        radius: Theme.radiusTiny
+        color: root.checked ? Theme.interactive : Theme.input
+        border.width: root.activeFocus ? 2 : 1
+        border.color: root.activeFocus ? Theme.focus : root.checked ? Theme.interactive : Theme.outlineStrong
 
-        Text {
+        AppIcon {
             anchors.centerIn: parent
-            text: root.checked ? "x" : ""
-            color: Theme.sidebar
-            font.pixelSize: Theme.caption
-            font.weight: Font.Bold
-            textFormat: Text.PlainText
+            width: 14
+            height: 14
+            visible: root.checked
+            glyph: "\uE73E"
+            iconColor: Theme.textOnAccent
+            iconSize: 12
+        }
+
+        Behavior on color {
+            ColorAnimation { duration: Theme.motionFast }
         }
     }
 
     contentItem: Text {
         leftPadding: root.indicator.width + root.spacing
         text: root.text
-        color: Theme.text
+        color: root.enabled ? Theme.text : Theme.textDisabled
         font: root.font
         verticalAlignment: Text.AlignVCenter
         textFormat: Text.PlainText
-        elide: Text.ElideRight
+        elide: Text.ElideNone
+        wrapMode: Text.WordWrap
     }
 }

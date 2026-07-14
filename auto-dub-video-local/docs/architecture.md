@@ -44,11 +44,11 @@ src/autodub/
 
 ## Application Lifecycle
 
-1. `autodub_desktop.py` relaunches itself with `.venv\Scripts\python.exe` when available.
+1. `autodub_desktop.py` relaunches itself with `.venv\Scripts\python.exe` when available. The source launcher exits after creating the project-runtime process; it does not import Qt or ML packages from the system Python installation.
 2. `autodub.desktop.main` creates the Qt application and registers `AutoDubController` with the QML engine.
-3. `AutoDubController` loads settings and project metadata, starts polling timers, and begins WhisperX warm-up on a background thread.
+3. `AutoDubController` loads settings and project metadata, starts polling timers, then warms WhisperX followed by the persistent HY-MT2 worker on a background thread.
 4. `Main.qml` presents Projects, Batch, Settings, and the shared processing workspace.
-5. Closing the application unsubscribes log events and releases the warmed WhisperX model.
+5. Closing the application unsubscribes log events, shuts down the HY-MT2 worker, and releases both warmed models.
 
 ## Job State Model
 
@@ -64,7 +64,7 @@ src/autodub/
 | `failed` | The pipeline captured an exception and wrote it to the job log. |
 | `cancelled` | A destructive cancellation occurred. |
 
-Every update persists progress, stage detail, current/total item counts, and timestamps. The QML progress surface reads this persisted data rather than maintaining a separate progress model.
+Every update persists progress, stage detail, current/total item counts, and timestamps. Job metadata uses a per-job lock plus atomic replacement (`temp -> fsync -> replace`) and retains the last valid `.bak` copy, so UI polling cannot observe a partially written `job.json`. The QML progress surface reads this persisted data rather than maintaining a separate progress model.
 
 ## Pipeline
 
@@ -72,7 +72,7 @@ Every update persists progress, stage detail, current/total item counts, and tim
 video input
   -> extract audio
   -> optional Demucs separation
-  -> WhisperX transcription and alignment
+  -> WhisperX transcription, sentence alignment, and per-subtitle language identification
   -> HY-MT2 translation
   -> optional translation review
   -> SRT generation
@@ -83,11 +83,13 @@ video input
 
 ### WhisperX
 
-`pipeline.transcribe` owns a process-local ASR cache. Warm-up loads the configured WhisperX model in a background thread. Subsequent transcription calls reuse it when the device matches. Alignment models are short-lived and released after use because they are language-specific and can consume significant VRAM.
+`pipeline.transcribe` owns a process-local ASR cache. Warm-up loads the configured WhisperX model in a background thread. Subsequent transcription calls reuse it when the device matches. WhisperX first produces sentence-level subtitle boundaries, then the same ASR model identifies the language of each sentence from only that sentence's audio. Detected language switches are transcribed again with the appropriate tokenizer and aligned with the matching language model, so a mixed-language video is not forced into the language detected at its beginning. Alignment models are short-lived and released after use because they are language-specific and can consume significant VRAM.
+
+Audio is decoded by the bundled FFmpeg process and passed to WhisperX as an in-memory waveform. The active pipeline therefore does not depend on TorchCodec's optional native decoder. Enabling that decoder on Windows would additionally require a compatible FFmpeg `full-shared` distribution; the static command-line FFmpeg bundle is intentionally kept smaller.
 
 ### Translation
 
-HY-MT2 runs in a separate Python process. The parent writes a JSON request into the job `temp` directory, streams JSON-lines progress from the worker, then reads the JSON response. Isolating translation protects the Qt process from native Torch failures and releases the translation model after each job.
+HY-MT2 runs in a persistent separate process. In source mode the parent invokes the worker with the same project virtual-environment interpreter; in a frozen build it invokes the executable's internal `--hymt2-worker` entry point. The worker warms after WhisperX during app start, receives JSON-line requests over standard input, and returns JSON-line status, batch-progress, and response events. It translates bounded, sliding context windows: a core batch is translated as one ordered JSON array while two neighbouring subtitle sentences on each side are supplied only as context. This preserves sentence boundaries for TTS while retaining local dialogue context and avoiding an unbounded full-video prompt. The worker holds its model for subsequent jobs and releases it only on app shutdown, cancellation, timeout, or crash.
 
 ### Voice Synthesis
 
@@ -103,6 +105,8 @@ HY-MT2 runs in a separate Python process. The parent writes a JSON request into 
 
 The build uses PyInstaller `--onedir` because Qt, Torch, WhisperX, and FFmpeg require adjacent native files. The executable is not designed to be relocated independently from its distribution directory.
 
+The dependency set is version-pinned in `requirements.txt`. `scripts/verify-runtime.py` validates the active project virtual environment, package versions, Qt modules, Torch/CUDA visibility, cache locations, bundled FFmpeg tools, and `pip check`. `scripts/build-exe.ps1` runs this verifier before PyInstaller so a contaminated or incomplete environment cannot silently produce a release artifact.
+
 ## Observability
 
 `services.job_store.log_to_job` is the authoritative pipeline log path. It writes a timestamped line to `logs.txt` and emits an in-process event. The desktop controller subscribes to the event stream, appends live lines to the selected project's log, and polls persisted job metadata for state changes.
@@ -111,8 +115,8 @@ The build uses PyInstaller `--onedir` because Qt, Torch, WhisperX, and FFmpeg re
 
 - One foreground pipeline job is active at a time.
 - Batch jobs are queued and run sequentially.
-- WhisperX warm-up is background work and serialises model loading with a lock.
-- HY-MT2 is isolated in one short-lived worker per translation phase.
+- WhisperX and HY-MT2 warm-up run sequentially in the background to avoid competing GPU loads.
+- HY-MT2 is isolated in one persistent worker for the desktop session; a cancelled job force-stops that worker and the next request creates a clean replacement.
 - Edge TTS is the only bounded fan-out stage, limited to one through four concurrent requests.
 
 This policy favours GPU stability and reproducibility over maximising throughput on a single workstation.

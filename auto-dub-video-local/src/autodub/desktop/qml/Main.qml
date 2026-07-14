@@ -8,8 +8,8 @@ ApplicationWindow {
 
     width: 1440
     height: 900
-    minimumWidth: 1160
-    minimumHeight: 760
+    minimumWidth: 1120
+    minimumHeight: 720
     visible: true
     visibility: Window.Maximized
     title: qsTr("Video Dubbing")
@@ -17,17 +17,26 @@ ApplicationWindow {
 
     property int pageIndex: 0
     property int workspaceReturnPage: 0
-    readonly property string pageTitle: pageIndex === 0 ? I18n.t("Projects")
-        : pageIndex === 1 ? I18n.t("Batch")
-        : I18n.t("Workspace")
+    readonly property bool compactNavigation: width < 1280
+    readonly property bool modelStatusFailed: controller.statusMessage.toLowerCase().indexOf("unavailable") >= 0
+        || controller.statusMessage.toLowerCase().indexOf("failed") >= 0
+    readonly property bool modelStatusBusy: !modelStatusFailed
+        && controller.statusMessage.toLowerCase().indexOf("ready") < 0
 
     Component.onCompleted: {
         Theme.darkMode = controller.settingsTheme === "dark"
         I18n.language = controller.settingsLanguage
     }
 
+    Shortcut {
+        sequence: "Ctrl+,"
+        onActivated: settingsDialog.open()
+    }
+
     PreviewWindow {
         id: previewWindow
+        transientParent: root
+        onBatchSetupReturnRequested: batchSettingsDialog.open()
     }
 
     ProjectSetupDialog {
@@ -36,6 +45,22 @@ ApplicationWindow {
 
     SettingsDialog {
         id: settingsDialog
+    }
+
+    BatchSettingsDialog {
+        id: batchSettingsDialog
+
+        onRequestEditAllSubtitles: {
+            close()
+            previewWindow.returnToBatchSetup = true
+            controller.openBatchSubtitleEditor()
+        }
+
+        onRequestEditSubtitleSize: function(sizeKey) {
+            close()
+            previewWindow.returnToBatchSetup = true
+            controller.openBatchSizeEditor(sizeKey)
+        }
     }
 
     TranslationReviewDialog {
@@ -53,13 +78,26 @@ ApplicationWindow {
             root.pageIndex = root.workspaceReturnPage
         }
 
+        function onBatchDeleted() {
+            root.workspaceReturnPage = 0
+            root.pageIndex = 0
+        }
+
         function onSettingsChanged() {
             Theme.darkMode = controller.settingsTheme === "dark"
             I18n.language = controller.settingsLanguage
         }
 
         function onProjectPrepared() {
-            root.pageIndex = 2
+            root.workspaceReturnPage = 0
+            root.pageIndex = controller.projectType === "batch" ? 2 : 1
+        }
+    }
+
+    Overlay.modal: Rectangle {
+        color: Theme.scrim
+        Behavior on opacity {
+            NumberAnimation { duration: Theme.motionStandard }
         }
     }
 
@@ -68,52 +106,146 @@ ApplicationWindow {
         spacing: 0
 
         Rectangle {
-            Layout.preferredWidth: 226
+            id: navigation
+
+            Layout.preferredWidth: root.compactNavigation ? Theme.navigationCompact : Theme.navigationExpanded
             Layout.fillHeight: true
             color: Theme.sidebar
 
+            Behavior on Layout.preferredWidth {
+                NumberAnimation { duration: Theme.motionStandard; easing.type: Easing.OutCubic }
+            }
+
             ColumnLayout {
                 anchors.fill: parent
-                anchors.margins: 16
-                spacing: 12
+                anchors.leftMargin: 14
+                anchors.rightMargin: 14
+                anchors.topMargin: 16
+                anchors.bottomMargin: 14
+                spacing: 8
+
+                Item {
+                    Layout.fillWidth: true
+                    Layout.preferredHeight: 48
+
+                    Row {
+                        anchors.left: root.compactNavigation ? undefined : parent.left
+                        anchors.horizontalCenter: root.compactNavigation ? parent.horizontalCenter : undefined
+                        anchors.verticalCenter: parent.verticalCenter
+                        spacing: 11
+
+                        AppIcon {
+                            width: 30
+                            height: 30
+                            glyph: "\uE714"
+                            iconColor: Theme.interactive
+                            iconSize: 22
+                        }
+
+                        Text {
+                            visible: !root.compactNavigation
+                            anchors.verticalCenter: parent.verticalCenter
+                            text: qsTr("Video Dubbing")
+                            color: Theme.textOnDark
+                            font.pixelSize: Theme.bodyLarge
+                            font.weight: Font.DemiBold
+                            textFormat: Text.PlainText
+                        }
+                    }
+                }
+
+                Rectangle {
+                    Layout.fillWidth: true
+                    Layout.preferredHeight: 1
+                    Layout.bottomMargin: 12
+                    color: Theme.divider
+                }
 
                 Text {
+                    visible: !root.compactNavigation
                     Layout.fillWidth: true
-                    Layout.topMargin: 18
-                    Layout.leftMargin: 8
+                    Layout.leftMargin: 12
+                    Layout.bottomMargin: 2
                     text: I18n.t("WORKSPACE")
                     color: Theme.textSubtle
-                    font.pixelSize: 10
+                    font.pixelSize: Theme.label
                     font.weight: Font.DemiBold
+                    font.capitalization: Font.AllUppercase
                     textFormat: Text.PlainText
                 }
 
                 SidebarButton {
                     Layout.fillWidth: true
+                    compact: root.compactNavigation
+                    iconGlyph: "\uE8B7"
                     text: I18n.t("Projects")
-                    selected: root.pageIndex === 0 || (root.pageIndex === 2 && root.workspaceReturnPage === 0)
+                    selected: root.pageIndex === 0 || root.pageIndex === 1 || root.pageIndex === 2
                     onClicked: {
                         controller.refreshJobs()
                         root.pageIndex = 0
                     }
                 }
 
-                SidebarButton {
-                    Layout.fillWidth: true
-                    text: I18n.t("Batch")
-                    selected: root.pageIndex === 1 || (root.pageIndex === 2 && root.workspaceReturnPage === 1)
-                    onClicked: root.pageIndex = 1
-                }
-
                 Item {
                     Layout.fillHeight: true
                 }
 
+                RowLayout {
+                    visible: !root.compactNavigation && (root.modelStatusBusy || root.modelStatusFailed)
+                    Layout.fillWidth: true
+                    Layout.leftMargin: 12
+                    Layout.rightMargin: 8
+                    Layout.bottomMargin: 8
+                    spacing: 9
+
+                    Rectangle {
+                        id: modelStatusIndicator
+                        Layout.preferredWidth: 7
+                        Layout.preferredHeight: 7
+                        radius: 4
+                        color: root.modelStatusFailed ? Theme.danger
+                            : root.modelStatusBusy ? Theme.warning
+                            : Theme.success
+
+                        SequentialAnimation on opacity {
+                            running: modelStatusIndicator.visible && root.modelStatusBusy && Theme.motionEnabled
+                            loops: Animation.Infinite
+                            NumberAnimation { to: 0.35; duration: 750; easing.type: Easing.InOutSine }
+                            NumberAnimation { to: 1; duration: 750; easing.type: Easing.InOutSine }
+                        }
+                    }
+
+                    Text {
+                        Layout.fillWidth: true
+                        text: controller.statusMessage
+                        color: Theme.textOnDarkMuted
+                        font.pixelSize: Theme.label
+                        textFormat: Text.PlainText
+                        elide: Text.ElideRight
+                    }
+                }
+
+                Rectangle {
+                    Layout.fillWidth: true
+                    Layout.preferredHeight: 1
+                    Layout.bottomMargin: 4
+                    color: Theme.divider
+                }
+
                 SidebarButton {
                     Layout.fillWidth: true
+                    compact: root.compactNavigation
+                    iconGlyph: "\uE713"
                     text: I18n.t("Settings")
                     onClicked: settingsDialog.open()
                 }
+            }
+
+            Rectangle {
+                anchors.right: parent.right
+                height: parent.height
+                width: 1
+                color: Theme.divider
             }
         }
 
@@ -121,38 +253,6 @@ ApplicationWindow {
             Layout.fillWidth: true
             Layout.fillHeight: true
             spacing: 0
-
-            Rectangle {
-                Layout.fillWidth: true
-                Layout.preferredHeight: 56
-                color: Theme.window
-                border.width: 0
-
-                RowLayout {
-                    anchors.fill: parent
-                    anchors.leftMargin: 26
-                    anchors.rightMargin: 26
-                    spacing: 12
-
-                    Text {
-                        Layout.fillWidth: true
-                        text: root.pageTitle
-                        color: Theme.textMuted
-                        font.pixelSize: Theme.caption
-                        font.weight: Font.Medium
-                        textFormat: Text.PlainText
-                    }
-
-                }
-
-                Rectangle {
-                    anchors.left: parent.left
-                    anchors.right: parent.right
-                    anchors.bottom: parent.bottom
-                    height: 1
-                    color: Theme.outline
-                }
-            }
 
             StackLayout {
                 Layout.fillWidth: true
@@ -162,35 +262,45 @@ ApplicationWindow {
                 ProjectsPage {
                     Layout.fillWidth: true
                     Layout.fillHeight: true
-                    Layout.margins: 24
+                    Layout.leftMargin: root.width < 1400 ? 22 : 30
+                    Layout.rightMargin: root.width < 1400 ? 22 : 30
+                    Layout.topMargin: 24
+                    Layout.bottomMargin: 24
                     onRequestNewProject: {
                         root.workspaceReturnPage = 0
                         projectSetupDialog.open()
                     }
-                    onOpenProject: {
+                    onOpenProject: function(projectType) {
                         root.workspaceReturnPage = 0
-                        root.pageIndex = 2
-                    }
-                }
-
-                BatchPage {
-                    Layout.fillWidth: true
-                    Layout.fillHeight: true
-                    Layout.margins: 24
-                    onOpenJobDetail: {
-                        root.workspaceReturnPage = 1
-                        root.pageIndex = 2
+                        root.pageIndex = projectType === "batch" ? 2 : 1
                     }
                 }
 
                 CreateJobPage {
                     Layout.fillWidth: true
                     Layout.fillHeight: true
-                    Layout.margins: 24
+                    Layout.leftMargin: root.width < 1400 ? 18 : 26
+                    Layout.rightMargin: root.width < 1400 ? 18 : 26
+                    Layout.topMargin: 20
+                    Layout.bottomMargin: 20
                     onRequestReviewTranslation: translationReviewDialog.open()
                     onRequestBack: root.pageIndex = root.workspaceReturnPage
                 }
 
+                BatchPage {
+                    Layout.fillWidth: true
+                    Layout.fillHeight: true
+                    Layout.leftMargin: root.width < 1400 ? 22 : 30
+                    Layout.rightMargin: root.width < 1400 ? 22 : 30
+                    Layout.topMargin: root.width < 1400 ? 30 : 36
+                    Layout.bottomMargin: 24
+                    onRequestBack: root.pageIndex = 0
+                    onRequestBatchSettings: batchSettingsDialog.open()
+                    onOpenJobDetail: {
+                        root.workspaceReturnPage = 2
+                        root.pageIndex = 1
+                    }
+                }
             }
         }
     }

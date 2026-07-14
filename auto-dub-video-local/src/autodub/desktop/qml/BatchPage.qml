@@ -1,179 +1,361 @@
+pragma ComponentBehavior: Bound
+
 import QtQuick
 import QtQuick.Controls.Basic
 import QtQuick.Layouts
 import "."
 
-ColumnLayout {
+Item {
     id: root
 
+    signal requestBack()
     signal openJobDetail()
+    signal requestBatchSettings()
 
-    spacing: Theme.gap
+    property bool dropActive: false
 
-    PageHeader {
-        Layout.fillWidth: true
-        title: I18n.t("Batch queue")
-        subtitle: I18n.t("Process a video collection with one shared dubbing setup.")
-
-        AppButton {
-            text: I18n.t("Clear")
-            enabled: controller.batchCount > 0 && !controller.isBatchRunning
-            onClicked: controller.clearBatch()
-        }
-
-        AppButton {
-            text: I18n.t("Add videos")
-            enabled: !controller.isBatchRunning
-            onClicked: controller.browseBatchVideos()
-        }
-
-        AppButton {
-            text: controller.isBatchRunning ? I18n.t("Running queue") : I18n.t("Start queue")
-            tone: "primary"
-            enabled: controller.batchPendingCount > 0 && !controller.isProcessing
-            onClicked: controller.startBatch()
-        }
-
-        AppButton {
-            text: I18n.t("Stop")
-            tone: "danger"
-            enabled: controller.isBatchRunning
-            onClicked: controller.stopBatch()
+    opacity: visible ? 1 : 0
+    transform: Translate {
+        y: root.visible ? 0 : 8
+        Behavior on y {
+            NumberAnimation { duration: Theme.motionStandard; easing.type: Easing.OutCubic }
         }
     }
+    Behavior on opacity {
+        NumberAnimation { duration: Theme.motionStandard }
+    }
 
-    Panel {
-        Layout.fillWidth: true
-        Layout.preferredHeight: 88
-        headerVisible: false
+    ColumnLayout {
+        anchors.fill: parent
+        spacing: Theme.space20
 
-        RowLayout {
+        PageHeader {
             Layout.fillWidth: true
-            spacing: 22
+            title: controller.projectName || I18n.t("Batch project")
+            subtitle: qsTr("%1 %2").arg(controller.batchCount).arg(I18n.t("videos"))
 
-            InfoRow {
-                Layout.preferredWidth: 150
-                label: I18n.t("Videos")
-                value: String(controller.batchCount)
+            AppButton {
+                text: I18n.t("Back")
+                iconGlyph: "\uE72B"
+                tone: "secondary"
+                onClicked: root.requestBack()
             }
 
-            InfoRow {
-                Layout.preferredWidth: 170
-                label: I18n.t("Completed")
-                value: qsTr("%1 / %2").arg(controller.batchCompletedCount).arg(controller.batchCount)
+            AppButton {
+                text: I18n.t("Batch setup")
+                toolTipText: I18n.t("Configure this batch")
+                enabled: controller.batchCount > 0 && !controller.isBatchRunning
+                onClicked: root.requestBatchSettings()
             }
 
-            InfoRow {
-                Layout.preferredWidth: 250
-                label: I18n.t("Target")
-                value: controller.batchTargetLanguageLabel
+            AppButton {
+                text: I18n.t("Delete batch")
+                iconGlyph: "\uE74D"
+                tone: "danger"
+                enabled: controller.batchCount > 0
+                onClicked: controller.deleteCurrentBatch()
             }
 
-            ColumnLayout {
-                Layout.fillWidth: true
-                spacing: 7
+            AppButton {
+                visible: !controller.isBatchRunning
+                text: I18n.t("Start queue")
+                iconGlyph: "\uE768"
+                tone: "primary"
+                enabled: controller.batchPendingCount > 0 && !controller.isProcessing
+                onClicked: controller.startBatch()
+            }
 
-                RowLayout {
+            AppButton {
+                visible: controller.isBatchRunning
+                text: I18n.t("Stop queue")
+                iconGlyph: "\uE71A"
+                tone: "danger"
+                onClicked: controller.stopBatch()
+            }
+        }
+
+        Rectangle {
+            Layout.fillWidth: true
+            Layout.preferredHeight: 88
+            radius: Theme.radius
+            color: Theme.surface
+            border.width: 1
+            border.color: Theme.outline
+
+            RowLayout {
+                anchors.fill: parent
+                anchors.leftMargin: Theme.space20
+                anchors.rightMargin: Theme.space20
+                spacing: Theme.space24
+
+                InfoRow {
+                    Layout.preferredWidth: 120
+                    label: I18n.t("Videos")
+                    value: String(controller.batchCount)
+                }
+
+                Rectangle {
+                    Layout.preferredWidth: 1
+                    Layout.preferredHeight: 38
+                    color: Theme.divider
+                }
+
+                InfoRow {
+                    Layout.preferredWidth: 150
+                    label: I18n.t("Completed")
+                    value: qsTr("%1 / %2").arg(controller.batchCompletedCount).arg(controller.batchCount)
+                }
+
+                Rectangle {
+                    Layout.preferredWidth: 1
+                    Layout.preferredHeight: 38
+                    color: Theme.divider
+                }
+
+                InfoRow {
+                    Layout.preferredWidth: 260
+                    label: I18n.t("Target")
+                    value: I18n.t(controller.batchTargetLanguageLabel)
+                }
+
+                ColumnLayout {
                     Layout.fillWidth: true
+                    spacing: Theme.space8
+
+                    RowLayout {
+                        Layout.fillWidth: true
+
+                        Text {
+                            Layout.fillWidth: true
+                            text: controller.isBatchRunning ? I18n.t("Queue processing") : I18n.t("Overall progress")
+                            color: Theme.textMuted
+                            font.pixelSize: Theme.caption
+                            textFormat: Text.PlainText
+                        }
+
+                        Text {
+                            text: qsTr("%1%").arg(controller.batchProgress)
+                            color: controller.batchProgress >= 100 ? Theme.success : Theme.text
+                            font.pixelSize: Theme.caption
+                            font.weight: Font.DemiBold
+                            textFormat: Text.PlainText
+                        }
+                    }
+
+                    AppProgressBar {
+                        Layout.fillWidth: true
+                        value: controller.batchProgress
+                    }
+                }
+            }
+        }
+
+        Rectangle {
+            id: importStrip
+
+            Layout.fillWidth: true
+            Layout.preferredHeight: 76
+            radius: Theme.radius
+            color: root.dropActive ? Theme.interactiveMuted : Theme.surfaceElevated
+            border.width: 1
+            border.color: root.dropActive ? Theme.focus : Theme.outline
+
+            RowLayout {
+                anchors.fill: parent
+                anchors.leftMargin: Theme.space20
+                anchors.rightMargin: Theme.space12
+                spacing: Theme.space12
+
+                AppIcon {
+                    Layout.preferredWidth: 28
+                    Layout.preferredHeight: 28
+                    glyph: "\uE898"
+                    iconColor: root.dropActive ? Theme.interactive : Theme.textMuted
+                    iconSize: Theme.iconLarge
+                }
+
+                ColumnLayout {
+                    Layout.fillWidth: true
+                    spacing: 2
 
                     Text {
                         Layout.fillWidth: true
-                        text: controller.isBatchRunning ? I18n.t("Queue processing") : I18n.t("Overall progress")
+                        text: root.dropActive ? I18n.t("Release to add videos") : I18n.t("Drop videos or a folder into the queue")
+                        color: Theme.text
+                        font.pixelSize: Theme.body
+                        font.weight: Font.DemiBold
+                        textFormat: Text.PlainText
+                    }
+
+                    Text {
+                        Layout.fillWidth: true
+                        text: I18n.t("Only MP4, MOV and MKV files are added")
                         color: Theme.textMuted
                         font.pixelSize: Theme.caption
                         textFormat: Text.PlainText
                     }
+                }
 
-                    Text {
-                        text: qsTr("%1%").arg(controller.batchProgress)
-                        color: Theme.text
-                        font.pixelSize: Theme.caption
-                        font.weight: Font.Medium
-                        textFormat: Text.PlainText
+                AppButton {
+                    text: I18n.t("Add videos")
+                    iconGlyph: "\uE710"
+                    enabled: !controller.isBatchRunning
+                    onClicked: controller.browseBatchVideos()
+                }
+
+                IconButton {
+                    id: importMoreButton
+                    glyph: "\uE712"
+                    toolTipText: I18n.t("More import options")
+                    enabled: !controller.isBatchRunning
+                    onClicked: importMenu.open()
+
+                    Menu {
+                        id: importMenu
+                        width: 230
+                        y: parent.height + Theme.space4
+                        padding: 6
+                        closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutsideParent
+
+                        background: Rectangle {
+                            color: Theme.surfaceElevated
+                            radius: Theme.radius
+                            border.width: 1
+                            border.color: Theme.outlineStrong
+                        }
+
+                        AppMenuItem {
+                            text: I18n.t("Add folder")
+                            iconGlyph: "\uE8B7"
+                            onTriggered: controller.browseBatchFolder()
+                        }
                     }
-                }
-
-                AppProgressBar {
-                    Layout.fillWidth: true
-                    value: controller.batchProgress
-                }
-            }
-        }
-    }
-
-    Panel {
-        Layout.fillWidth: true
-        Layout.fillHeight: true
-        title: I18n.t("Video jobs")
-        subtitle: qsTr("Newest additions appear at the bottom of this queue")
-
-        Item {
-            Layout.fillWidth: true
-            Layout.fillHeight: true
-
-            ListView {
-                id: queueList
-
-                anchors.fill: parent
-                clip: true
-                spacing: 8
-                model: controller.batchJobModel
-                reuseItems: true
-
-                delegate: BatchJobRow {
-                    onActivated: {
-                        controller.selectBatchJob(index)
-                        root.openJobDetail()
-                    }
-                }
-
-                ScrollBar.vertical: ScrollBar {}
-            }
-
-            Column {
-                anchors.centerIn: parent
-                width: Math.min(420, parent.width - 40)
-                spacing: 8
-                visible: controller.batchCount === 0
-
-                Text {
-                    width: parent.width
-                    text: I18n.t("Add videos to build a batch")
-                    color: Theme.text
-                    font.pixelSize: Theme.h2
-                    font.weight: Font.Medium
-                    horizontalAlignment: Text.AlignHCenter
-                    textFormat: Text.PlainText
-                }
-
-                Text {
-                    width: parent.width
-                    text: I18n.t("Drop MP4, MOV or MKV files here")
-                    color: Theme.textMuted
-                    font.pixelSize: Theme.caption
-                    horizontalAlignment: Text.AlignHCenter
-                    textFormat: Text.PlainText
                 }
             }
 
             DropArea {
                 anchors.fill: parent
                 keys: ["text/uri-list"]
+                enabled: !controller.isBatchRunning
 
                 onEntered: function(drag) {
-                    if (drag.hasUrls && !controller.isBatchRunning) {
+                    if (drag.hasUrls) {
+                        root.dropActive = true
                         drag.accept()
                     }
                 }
+                onExited: root.dropActive = false
                 onDropped: function(drop) {
-                    if (!drop.urls || drop.urls.length === 0 || controller.isBatchRunning) {
+                    root.dropActive = false
+                    if (!drop.urls || drop.urls.length === 0)
                         return
-                    }
                     var paths = []
-                    for (var i = 0; i < drop.urls.length; i++) {
+                    for (var i = 0; i < drop.urls.length; i++)
                         paths.push(String(drop.urls[i]))
-                    }
                     controller.importBatchVideos(paths)
+                }
+            }
+
+            Behavior on color {
+                ColorAnimation { duration: Theme.motionFast }
+            }
+            Behavior on border.color {
+                ColorAnimation { duration: Theme.motionFast }
+            }
+        }
+
+        ColumnLayout {
+            Layout.fillWidth: true
+            Layout.fillHeight: true
+            spacing: Theme.space12
+
+            RowLayout {
+                Layout.fillWidth: true
+
+                Text {
+                    Layout.fillWidth: true
+                    text: I18n.t("Video jobs")
+                    color: Theme.text
+                    font.pixelSize: Theme.h2
+                    font.weight: Font.DemiBold
+                    textFormat: Text.PlainText
+                }
+
+                Text {
+                    visible: controller.batchCount > 0
+                    text: qsTr("%1 %2").arg(controller.batchCount).arg(I18n.t("items"))
+                    color: Theme.textMuted
+                    font.pixelSize: Theme.caption
+                    textFormat: Text.PlainText
+                }
+            }
+
+            Rectangle {
+                Layout.fillWidth: true
+                Layout.fillHeight: true
+                radius: Theme.radius
+                color: Theme.surface
+                border.width: 1
+                border.color: Theme.outline
+
+                GridView {
+                    id: queueList
+
+                    anchors.fill: parent
+                    anchors.margins: controller.batchCount > 0 ? 10 : 0
+                    clip: true
+                    model: controller.batchJobModel
+                    reuseItems: true
+                    cellWidth: Math.max(210, Math.floor((width - 16) / Math.max(2, Math.floor((width - 16) / 250))))
+                    cellHeight: Math.round(cellWidth * 0.68 + 78)
+
+                    delegate: BatchVideoCard {
+                        width: queueList.cellWidth - Theme.space8
+                        height: queueList.cellHeight - Theme.space8
+                        onActivated: {
+                            controller.selectBatchJob(index)
+                            root.openJobDetail()
+                        }
+                    }
+
+                    ScrollBar.vertical: ScrollBar {
+                        policy: ScrollBar.AsNeeded
+                    }
+                }
+
+                Column {
+                    anchors.centerIn: parent
+                    width: Math.min(420, parent.width - 40)
+                    spacing: Theme.space8
+                    visible: controller.batchCount === 0
+
+                    AppIcon {
+                        anchors.horizontalCenter: parent.horizontalCenter
+                        width: 34
+                        height: 34
+                        glyph: "\uE8FD"
+                        iconColor: Theme.textSubtle
+                        iconSize: 28
+                    }
+
+                    Text {
+                        width: parent.width
+                        text: I18n.t("Your queue is empty")
+                        color: Theme.text
+                        font.pixelSize: Theme.h3
+                        font.weight: Font.DemiBold
+                        horizontalAlignment: Text.AlignHCenter
+                        textFormat: Text.PlainText
+                    }
+
+                    Text {
+                        width: parent.width
+                        text: I18n.t("Add videos above to begin a batch")
+                        color: Theme.textMuted
+                        font.pixelSize: Theme.caption
+                        horizontalAlignment: Text.AlignHCenter
+                        textFormat: Text.PlainText
+                    }
                 }
             }
         }

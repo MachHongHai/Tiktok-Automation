@@ -5,32 +5,41 @@ import "."
 Slider {
     id: root
 
-    implicitHeight: 28
+    implicitHeight: 30
+    activeFocusOnTab: true
 
     background: Rectangle {
         x: root.leftPadding
         y: root.topPadding + root.availableHeight / 2 - height / 2
         width: root.availableWidth
-        height: 5
-        radius: 3
+        height: 4
+        radius: 2
         color: Theme.surfaceStrong
 
         Rectangle {
             width: root.visualPosition * parent.width
             height: parent.height
-            radius: 3
-            color: Theme.interactive
+            radius: 2
+            color: root.enabled ? Theme.interactive : Theme.textDisabled
+
+            Behavior on width {
+                NumberAnimation { duration: root.pressed ? 0 : Theme.motionFast; easing.type: Easing.OutCubic }
+            }
         }
     }
 
     handle: Rectangle {
         x: root.leftPadding + root.visualPosition * (root.availableWidth - width)
         y: root.topPadding + root.availableHeight / 2 - height / 2
-        implicitWidth: 17
-        implicitHeight: 17
-        radius: 9
-        color: root.pressed ? Theme.interactiveHover : Theme.text
-        border.width: 3
-        border.color: Theme.interactive
+        implicitWidth: root.pressed || root.hovered ? 18 : 16
+        implicitHeight: implicitWidth
+        radius: width / 2
+        color: root.enabled ? Theme.text : Theme.textDisabled
+        border.width: root.activeFocus ? 3 : 2
+        border.color: root.activeFocus ? Theme.focus : Theme.interactive
+
+        Behavior on implicitWidth {
+            NumberAnimation { duration: Theme.motionFast; easing.type: Easing.OutCubic }
+        }
     }
 }

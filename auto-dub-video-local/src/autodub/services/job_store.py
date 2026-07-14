@@ -1,6 +1,8 @@
 import json
 import os
 import stat
+import tempfile
+import threading
 import time
 from datetime import datetime, timezone
 from typing import List, Optional
@@ -10,12 +12,29 @@ from autodub.core.events import emit_log
 from autodub.schemas.job import JobConfig, JobInfo
 
 
+_JOB_LOCKS: dict[str, threading.RLock] = {}
+_JOB_LOCKS_GUARD = threading.Lock()
+
+
+def _job_lock(job_id: str) -> threading.RLock:
+    with _JOB_LOCKS_GUARD:
+        lock = _JOB_LOCKS.get(job_id)
+        if lock is None:
+            lock = threading.RLock()
+            _JOB_LOCKS[job_id] = lock
+        return lock
+
+
 def get_job_dir(job_id: str) -> str:
     return os.path.join(JOBS_DIR, job_id)
 
 
 def get_job_json_path(job_id: str) -> str:
     return os.path.join(get_job_dir(job_id), "job.json")
+
+
+def _get_job_backup_path(job_id: str) -> str:
+    return get_job_json_path(job_id) + ".bak"
 
 
 def get_job_logs_path(job_id: str) -> str:
@@ -55,6 +74,7 @@ def create_job(job_id: str, original_filename: str, config: JobConfig, video_ext
         original_video_volume=config.original_video_volume,
         project_name=config.project_name,
         project_directory=config.project_directory,
+        project_type=config.project_type,
         review_approved=config.review_approved,
         status="pending",
         progress=0,
@@ -73,33 +93,86 @@ def create_job(job_id: str, original_filename: str, config: JobConfig, video_ext
 
 
 def save_job(job_info: JobInfo):
+    with _job_lock(job_info.job_id):
+        _save_job_unlocked(job_info)
+
+
+def _job_data(job_info: JobInfo) -> dict:
+    return job_info.model_dump() if hasattr(job_info, "model_dump") else job_info.dict()
+
+
+def _write_json_atomic(path: str, data: dict) -> None:
+    """Write a complete JSON document before replacing the previous file."""
+    directory = os.path.dirname(path)
+    os.makedirs(directory, exist_ok=True)
+    handle, temporary_path = tempfile.mkstemp(prefix=".job-", suffix=".json.tmp", dir=directory)
+    try:
+        with os.fdopen(handle, "w", encoding="utf-8") as file:
+            json.dump(data, file, ensure_ascii=False, indent=2)
+            file.flush()
+            os.fsync(file.fileno())
+        os.replace(temporary_path, path)
+    except Exception:
+        try:
+            os.remove(temporary_path)
+        except FileNotFoundError:
+            pass
+        raise
+
+
+def _save_job_unlocked(job_info: JobInfo) -> None:
     path = get_job_json_path(job_info.job_id)
-    with open(path, "w", encoding="utf-8") as file:
-        data = job_info.model_dump() if hasattr(job_info, "model_dump") else job_info.dict()
-        json.dump(data, file, ensure_ascii=False, indent=2)
+    backup_path = _get_job_backup_path(job_info.job_id)
+    if os.path.exists(path):
+        try:
+            with open(path, "r", encoding="utf-8") as file:
+                previous_data = json.load(file)
+            _write_json_atomic(backup_path, previous_data)
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+            # Preserve the last known-good backup if an older app version left a corrupt file.
+            pass
+    _write_json_atomic(path, _job_data(job_info))
 
 
-def get_job(job_id: str) -> Optional[JobInfo]:
+def _get_job_unlocked(job_id: str) -> Optional[JobInfo]:
     path = get_job_json_path(job_id)
     if not os.path.exists(path):
         return None
-    with open(path, "r", encoding="utf-8") as file:
-        data = json.load(file)
-        return JobInfo(**data)
+    try:
+        with open(path, "r", encoding="utf-8") as file:
+            return JobInfo(**json.load(file))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError, ValueError) as original_error:
+        backup_path = _get_job_backup_path(job_id)
+        if not os.path.exists(backup_path):
+            raise RuntimeError(f"Job metadata is unreadable: {path}") from original_error
+        try:
+            with open(backup_path, "r", encoding="utf-8") as file:
+                recovered = JobInfo(**json.load(file))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError, ValueError) as backup_error:
+            raise RuntimeError(f"Job metadata and backup are unreadable: {path}") from backup_error
+        _write_json_atomic(path, _job_data(recovered))
+        log_to_job(job_id, "Recovered job metadata from the last atomic backup.")
+        return recovered
+
+
+def get_job(job_id: str) -> Optional[JobInfo]:
+    with _job_lock(job_id):
+        return _get_job_unlocked(job_id)
 
 
 def update_job(job_id: str, **kwargs) -> Optional[JobInfo]:
-    job_info = get_job(job_id)
-    if not job_info:
-        return None
+    with _job_lock(job_id):
+        job_info = _get_job_unlocked(job_id)
+        if not job_info:
+            return None
 
-    for key, value in kwargs.items():
-        if hasattr(job_info, key):
-            setattr(job_info, key, value)
+        for key, value in kwargs.items():
+            if hasattr(job_info, key):
+                setattr(job_info, key, value)
 
-    job_info.updated_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
-    save_job(job_info)
-    return job_info
+        job_info.updated_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+        _save_job_unlocked(job_info)
+        return job_info
 
 
 def list_jobs() -> List[JobInfo]:
@@ -137,19 +210,20 @@ def _force_remove_readonly(func, path, _exc_info):
 def delete_job(job_id: str, attempts: int = 8, delay_seconds: float = 0.35) -> bool:
     import shutil
 
-    job_dir = get_job_dir(job_id)
-    if not os.path.exists(job_dir):
-        return False
+    with _job_lock(job_id):
+        job_dir = get_job_dir(job_id)
+        if not os.path.exists(job_dir):
+            return False
 
-    last_error = None
-    for attempt in range(attempts):
-        try:
-            shutil.rmtree(job_dir, onerror=_force_remove_readonly)
-            return True
-        except Exception as exc:
-            last_error = exc
-            time.sleep(delay_seconds * (attempt + 1))
+        last_error = None
+        for attempt in range(attempts):
+            try:
+                shutil.rmtree(job_dir, onerror=_force_remove_readonly)
+                return True
+            except Exception as exc:
+                last_error = exc
+                time.sleep(delay_seconds * (attempt + 1))
 
-    if os.path.exists(job_dir):
-        raise RuntimeError(f"Could not delete job folder after {attempts} attempts: {last_error}")
-    return True
+        if os.path.exists(job_dir):
+            raise RuntimeError(f"Could not delete job folder after {attempts} attempts: {last_error}")
+        return True

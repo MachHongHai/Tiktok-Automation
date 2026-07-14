@@ -4,6 +4,7 @@ import shutil
 import queue
 import threading
 import hashlib
+from collections import Counter
 from datetime import datetime, timezone
 
 from PySide6.QtCore import QAbstractListModel, QModelIndex, QObject, Property, Qt, QTimer, QUrl, Signal, Slot
@@ -17,7 +18,8 @@ from autodub.core.events import subscribe_log, unsubscribe_log
 from autodub.pipeline.job_manager import cancel_job, pause_job
 from autodub.schemas.job import CropSettings, JobConfig, SubtitleStyle
 from autodub.services import job_store
-from autodub.services.desktop_jobs import create_desktop_job
+from autodub.services.desktop_jobs import SUPPORTED_VIDEO_EXTENSIONS, create_desktop_job
+from autodub.services.translation import shutdown_hymt2_worker, warm_hymt2_worker
 from autodub.services import desktop_settings
 from autodub.utils.ffmpeg import get_video_dimensions
 from autodub.pipeline.transcribe import release_warm_whisperx_model, warm_whisperx_model
@@ -94,6 +96,8 @@ class JobListModel(QAbstractListModel):
     ProgressRole = Qt.ItemDataRole.UserRole + 7
     ThumbnailRole = Qt.ItemDataRole.UserRole + 8
     ProjectNameRole = Qt.ItemDataRole.UserRole + 9
+    VideoSizeRole = Qt.ItemDataRole.UserRole + 10
+    SubtitleOverrideRole = Qt.ItemDataRole.UserRole + 11
 
     def __init__(self):
         super().__init__()
@@ -116,6 +120,8 @@ class JobListModel(QAbstractListModel):
             self.ProgressRole: job.progress,
             self.ThumbnailRole: self._thumbnail_source(job),
             self.ProjectNameRole: job.project_name or job.original_filename,
+            self.VideoSizeRole: self._video_size(job),
+            self.SubtitleOverrideRole: bool(getattr(job, "subtitle_override", False)),
         }.get(role)
 
     def roleNames(self):
@@ -129,6 +135,8 @@ class JobListModel(QAbstractListModel):
             self.ProgressRole: b"progress",
             self.ThumbnailRole: b"thumbnailSource",
             self.ProjectNameRole: b"projectName",
+            self.VideoSizeRole: b"videoSize",
+            self.SubtitleOverrideRole: b"subtitleOverride",
         }
 
     def set_jobs(self, jobs):
@@ -156,6 +164,72 @@ class JobListModel(QAbstractListModel):
     def _thumbnail_source(job):
         path = job.files.get("thumbnail") if job else ""
         return QUrl.fromLocalFile(path).toString() if path and os.path.exists(path) else ""
+
+    @staticmethod
+    def _video_size(job):
+        width = int(getattr(job, "video_width", 0) or 0)
+        height = int(getattr(job, "video_height", 0) or 0)
+        return f"{width} x {height}" if width and height else "Unknown size"
+
+
+class ProjectListModel(QAbstractListModel):
+    ProjectNameRole = Qt.ItemDataRole.UserRole + 1
+    ProjectTypeRole = Qt.ItemDataRole.UserRole + 2
+    JobCountRole = Qt.ItemDataRole.UserRole + 3
+    StatusRole = Qt.ItemDataRole.UserRole + 4
+    ProgressRole = Qt.ItemDataRole.UserRole + 5
+    ThumbnailRole = Qt.ItemDataRole.UserRole + 6
+
+    def __init__(self):
+        super().__init__()
+        self._projects = []
+
+    def rowCount(self, parent=QModelIndex()):
+        return 0 if parent.isValid() else len(self._projects)
+
+    def data(self, index, role=Qt.ItemDataRole.DisplayRole):
+        if not index.isValid() or index.row() < 0 or index.row() >= len(self._projects):
+            return None
+        project = self._projects[index.row()]
+        return {
+            self.ProjectNameRole: project["project_name"],
+            self.ProjectTypeRole: project["project_type"],
+            self.JobCountRole: project["job_count"],
+            self.StatusRole: project["status"],
+            self.ProgressRole: project["progress"],
+            self.ThumbnailRole: project["thumbnail_source"],
+        }.get(role)
+
+    def roleNames(self):
+        return {
+            self.ProjectNameRole: b"projectName",
+            self.ProjectTypeRole: b"projectType",
+            self.JobCountRole: b"jobCount",
+            self.StatusRole: b"status",
+            self.ProgressRole: b"progress",
+            self.ThumbnailRole: b"thumbnailSource",
+        }
+
+    def set_projects(self, projects):
+        next_keys = [project["key"] for project in projects]
+        current_keys = [project["key"] for project in self._projects]
+        if current_keys == next_keys:
+            self._projects = projects
+            if projects:
+                self.dataChanged.emit(
+                    self.index(0, 0),
+                    self.index(len(projects) - 1, 0),
+                    list(self.roleNames().keys()),
+                )
+            return
+        self.beginResetModel()
+        self._projects = projects
+        self.endResetModel()
+
+    def project_at(self, row: int):
+        if row < 0 or row >= len(self._projects):
+            return None
+        return self._projects[row]
 
 
 class TaskListModel(QAbstractListModel):
@@ -199,7 +273,7 @@ class TaskListModel(QAbstractListModel):
         return {
             self.NameRole: b"name",
             self.KeyRole: b"key",
-            self.StateRole: b"state",
+            self.StateRole: b"taskState",
             self.DetailRole: b"detail",
         }
 
@@ -234,10 +308,8 @@ class TaskListModel(QAbstractListModel):
 class AutoDubController(QObject):
     videoPathChanged = Signal()
     videoThumbnailChanged = Signal()
-    sourceLanguageChanged = Signal()
     targetLanguageChanged = Signal()
     ttsVoiceChanged = Signal()
-    outputFormatChanged = Signal()
     enableAudioSeparationChanged = Signal()
     originalVolumeChanged = Signal()
     workflowModeChanged = Signal()
@@ -248,6 +320,7 @@ class AutoDubController(QObject):
     previewChanged = Signal()
     previewOpenRequested = Signal()
     jobDeleted = Signal()
+    batchDeleted = Signal()
     batchChanged = Signal()
     settingsChanged = Signal()
     projectSetupChanged = Signal()
@@ -256,14 +329,13 @@ class AutoDubController(QObject):
     def __init__(self):
         super().__init__()
         self.jobs = JobListModel()
+        self.projects = ProjectListModel()
         self.batch_jobs = JobListModel()
         self.tasks = TaskListModel()
         self._video_path = ""
         self._video_thumbnail_source = ""
-        self._source_language = "auto"
         self._target_language = "vi"
         self._tts_voice = "vi-VN-HoaiMyNeural"
-        self._output_format = "keep_ratio"
         self._enable_audio_separation = False
         self._original_volume = 60
         self._workflow_mode = "A"
@@ -286,15 +358,21 @@ class AutoDubController(QObject):
         self._preview_title = "Preview"
         self._preview_interactive = False
         self._preview_aspect_ratio = 16 / 9
+        self._preview_edit_scope = "draft"
+        self._preview_target_job_ids = []
+        self._preview_group_keys = []
+        self._preview_group_index = -1
+        self._preview_original_style = None
         settings = desktop_settings.load_settings()
         self._settings_theme = settings["theme"]
         self._settings_language = settings["language"]
         self._project_directory = os.path.join(RUNTIME_DATA_DIR, "projects")
         self._project_name = ""
+        self._project_type = "single"
         self._log_queue = queue.Queue()
         self._thumbnail_refresh_running = False
 
-        threading.Thread(target=self._warm_whisperx, daemon=True).start()
+        threading.Thread(target=self._warm_models, daemon=True).start()
 
         subscribe_log(self._on_job_log)
         self._log_timer = QTimer(self)
@@ -309,19 +387,31 @@ class AutoDubController(QObject):
 
     def shutdown(self):
         unsubscribe_log(self._on_job_log)
+        shutdown_hymt2_worker()
         release_warm_whisperx_model()
 
-    def _warm_whisperx(self):
+    def _warm_models(self):
         try:
             warm_whisperx_model()
             self._status_message = "WhisperX model ready"
+            self.statusMessageChanged.emit()
+            warm_hymt2_worker(self._set_warmup_status)
+            self._status_message = "WhisperX and HY-MT2 models ready"
         except Exception as exc:
-            self._status_message = f"WhisperX warm-up unavailable: {exc}"
+            self._status_message = f"Model warm-up unavailable: {exc}"
+        self.statusMessageChanged.emit()
+
+    def _set_warmup_status(self, detail: str):
+        self._status_message = detail
         self.statusMessageChanged.emit()
 
     @Property(QObject, constant=True)
     def jobModel(self):
         return self.jobs
+
+    @Property(QObject, constant=True)
+    def projectModel(self):
+        return self.projects
 
     @Property(QObject, constant=True)
     def batchJobModel(self):
@@ -356,8 +446,24 @@ class AutoDubController(QObject):
     def batchTargetLanguageLabel(self):
         if not self._batch_job_ids:
             return self._language_label(self._target_language)
-        job = job_store.get_job(self._batch_job_ids[0])
-        return self._language_label(job.target_language) if job else self._language_label(self._target_language)
+        jobs = [job_store.get_job(job_id) for job_id in self._batch_job_ids]
+        languages = {job.target_language for job in jobs if job}
+        if len(languages) > 1:
+            return "Mixed settings"
+        return self._language_label(next(iter(languages))) if languages else self._language_label(self._target_language)
+
+    @Property("QVariantList", notify=batchChanged)
+    def batchVideoSizeGroups(self):
+        return [
+            {
+                "sizeKey": group["size_key"],
+                "label": group["label"],
+                "count": len(group["jobs"]),
+                "customizedCount": sum(1 for job in group["jobs"] if job.subtitle_override),
+                "thumbnailSource": JobListModel._thumbnail_source(group["jobs"][0]),
+            }
+            for group in self._batch_dimension_groups()
+        ]
 
     @Property(QObject, constant=True)
     def taskModel(self):
@@ -378,16 +484,6 @@ class AutoDubController(QObject):
     @Property(str, notify=videoThumbnailChanged)
     def videoThumbnailSource(self):
         return self._video_thumbnail_source
-
-    @Property(str, notify=sourceLanguageChanged)
-    def sourceLanguage(self):
-        return self._source_language
-
-    @sourceLanguage.setter
-    def sourceLanguage(self, value):
-        if self._source_language != value:
-            self._source_language = value
-            self.sourceLanguageChanged.emit()
 
     @Property("QVariantList", constant=True)
     def targetLanguageOptions(self):
@@ -441,16 +537,6 @@ class AutoDubController(QObject):
                 return index
         return 0
 
-    @Property(str, notify=outputFormatChanged)
-    def outputFormat(self):
-        return self._output_format
-
-    @outputFormat.setter
-    def outputFormat(self, value):
-        if self._output_format != value:
-            self._output_format = value
-            self.outputFormatChanged.emit()
-
     @Property(bool, notify=enableAudioSeparationChanged)
     def enableAudioSeparation(self):
         return self._enable_audio_separation
@@ -486,6 +572,13 @@ class AutoDubController(QObject):
     def isProcessing(self):
         return self._is_processing
 
+    @Property(bool, notify=processingChanged)
+    def isSelectedJobProcessing(self):
+        if not self._selected_job_id or self._selected_job_id != self._processing_job_id:
+            return False
+        job = job_store.get_job(self._selected_job_id)
+        return bool(job and job.status == "processing")
+
     @Property(str, notify=processingChanged)
     def processingText(self):
         job = job_store.get_job(self._processing_job_id) if self._processing_job_id else None
@@ -499,6 +592,11 @@ class AutoDubController(QObject):
     @Property(bool, notify=selectedJobChanged)
     def hasSelectedJob(self):
         return self._selected_job_id is not None and job_store.get_job(self._selected_job_id) is not None
+
+    @Property(bool, notify=selectedJobChanged)
+    def isSelectedBatchJob(self):
+        job = job_store.get_job(self._selected_job_id) if self._selected_job_id else None
+        return bool(job and job.project_type == "batch" and job.job_id in self._batch_job_ids)
 
     @Property("QVariantList", notify=selectedJobChanged)
     def reviewSegments(self):
@@ -652,6 +750,10 @@ class AutoDubController(QObject):
     def projectName(self):
         return self._project_name
 
+    @Property(str, notify=projectSetupChanged)
+    def projectType(self):
+        return self._project_type
+
     @Property(str, notify=previewChanged)
     def previewTitle(self):
         return self._preview_title
@@ -684,6 +786,10 @@ class AutoDubController(QObject):
     def subtitleFontSize(self):
         return self._caption_font_size
 
+    @Property(str, notify=previewChanged)
+    def previewSaveLabel(self):
+        return "Apply to this size" if self._preview_edit_scope == "size_group" else "Save subtitle frame"
+
     @Slot()
     def browseVideo(self):
         path, _ = QFileDialog.getOpenFileName(None, "Choose input video", "", "Video files (*.mp4 *.mov *.mkv);;All files (*.*)")
@@ -705,6 +811,11 @@ class AutoDubController(QObject):
         destination = job.files["video_input"]
         shutil.copy2(normalized_path, destination)
         job.original_filename = os.path.basename(normalized_path)
+        try:
+            job.video_width, job.video_height = get_video_dimensions(destination)
+        except RuntimeError:
+            job.video_width, job.video_height = 0, 0
+        job.subtitle_override = True
         thumbnail_path = self._create_video_thumbnail_path(destination)
         if thumbnail_path:
             job.files["thumbnail"] = thumbnail_path
@@ -724,8 +835,8 @@ class AutoDubController(QObject):
             self._project_directory = os.path.abspath(path)
             self.projectSetupChanged.emit()
 
-    @Slot(str, str, result=bool)
-    def prepareProject(self, project_name, project_directory):
+    @Slot(str, str, str, result=bool)
+    def prepareProject(self, project_name, project_directory, project_type):
         project_name = project_name.strip()
         project_directory = project_directory.strip()
         if not project_name:
@@ -736,8 +847,11 @@ class AutoDubController(QObject):
             return False
         self._project_name = project_name
         self._project_directory = os.path.abspath(project_directory)
+        self._project_type = "batch" if project_type == "batch" else "single"
         self.videoPath = ""
         self._selected_job_id = None
+        self._batch_job_ids = []
+        self._refresh_batch_model()
         self._logs = ""
         self.tasks.set_job(None)
         self.projectSetupChanged.emit()
@@ -802,33 +916,39 @@ class AutoDubController(QObject):
         if paths:
             self.importBatchVideos(paths)
 
+    @Slot()
+    def browseBatchFolder(self):
+        folder = QFileDialog.getExistingDirectory(
+            None,
+            "Choose a folder of videos for batch processing",
+            "",
+            QFileDialog.Option.ShowDirsOnly,
+        )
+        if folder:
+            self.importBatchVideos([folder])
+
     @Slot("QVariantList")
     def importBatchVideos(self, paths):
         if self._batch_running:
             QMessageBox.information(None, "Batch running", "Stop the current batch before adding more videos.")
             return
 
-        valid_paths = []
-        invalid_names = []
-        for value in paths:
-            path = self._normalize_video_path(value)
-            extension = os.path.splitext(path)[1].lower()
-            if os.path.isfile(path) and extension in {".mp4", ".mov", ".mkv"}:
-                if path not in valid_paths:
-                    valid_paths.append(path)
-            else:
-                invalid_names.append(os.path.basename(path) or path)
+        valid_paths, invalid_names = self._collect_batch_video_paths(paths)
 
         if not valid_paths:
             QMessageBox.warning(None, "No supported videos", "Choose MP4, MOV, or MKV video files.")
             return
 
-        config = self._build_config()
         created_ids = []
         errors = []
         for path in valid_paths:
             try:
-                job = create_desktop_job(path, config)
+                job = create_desktop_job(
+                    path,
+                    self._build_config(),
+                    project_name=self._project_name,
+                    project_directory=self._project_directory,
+                )
                 thumbnail_path = self._create_video_thumbnail_path(job.files["video_input"])
                 if thumbnail_path:
                     job.files["thumbnail"] = thumbnail_path
@@ -871,6 +991,68 @@ class AutoDubController(QObject):
         self.processingChanged.emit()
         threading.Thread(target=self._run_batch_queue, args=(pending_ids,), daemon=True).start()
 
+    @Slot(result=bool)
+    def applyBatchSettings(self):
+        if self._batch_running or self._is_processing:
+            QMessageBox.information(None, "Batch settings", "Stop processing before changing batch settings.")
+            return False
+        updated = 0
+        for job_id in self._batch_job_ids:
+            job = job_store.get_job(job_id)
+            if not job:
+                continue
+            job_store.update_job(
+                job_id,
+                mode=self._workflow_mode,
+                source_language="auto",
+                target_language=self._target_language,
+                tts_voice=self._tts_voice,
+                enable_audio_separation=self._enable_audio_separation,
+                original_video_volume=self._original_volume,
+            )
+            updated += 1
+        if not updated:
+            QMessageBox.information(None, "Batch settings", "Add at least one video before applying settings.")
+            return False
+        self.refreshJobs()
+        self.batchChanged.emit()
+        return True
+
+    @Slot()
+    def loadBatchSettings(self):
+        jobs = [job_store.get_job(job_id) for job_id in self._batch_job_ids]
+        jobs = [job for job in jobs if job]
+        if not jobs:
+            return
+        common, _count = Counter(
+            (
+                job.mode,
+                job.target_language,
+                job.tts_voice,
+                job.enable_audio_separation,
+                job.original_video_volume,
+            )
+            for job in jobs
+        ).most_common(1)[0]
+        self._workflow_mode, self._target_language, self._tts_voice, self._enable_audio_separation, self._original_volume = common
+        self.workflowModeChanged.emit()
+        self.targetLanguageChanged.emit()
+        self.ttsVoiceChanged.emit()
+        self.enableAudioSeparationChanged.emit()
+        self.originalVolumeChanged.emit()
+
+    @Slot(result=bool)
+    def saveSelectedJobSettings(self):
+        job = job_store.get_job(self._selected_job_id) if self._selected_job_id else None
+        if not job or job.project_type != "batch" or job.status == "processing":
+            return False
+        self._apply_setup_to_job(job)
+        job_store.log_to_job(job.job_id, "Per-video dubbing settings saved.")
+        self.refreshJobs()
+        self.selectedJobChanged.emit()
+        self.batchChanged.emit()
+        return True
+
     @Slot()
     def stopBatch(self):
         if not self._batch_running:
@@ -899,6 +1081,107 @@ class AutoDubController(QObject):
         self._batch_job_ids = []
         self._refresh_batch_model()
         self.batchChanged.emit()
+
+    @staticmethod
+    def _batch_output_directory(job):
+        """Return only the app-owned per-video output directory, if it is safe to remove."""
+        project_directory = (job.project_directory or "").strip()
+        output_path = (job.files or {}).get("final_video", "")
+        if not project_directory or not output_path:
+            return ""
+        safe_project = "".join(
+            character if character.isalnum() or character in {"-", "_", " "} else "_"
+            for character in (job.project_name or "").strip()
+        ).strip() or "project"
+        project_root = os.path.abspath(os.path.join(project_directory, safe_project))
+        outputs_root = os.path.abspath(os.path.join(project_root, "outputs"))
+        output_directory = os.path.abspath(os.path.dirname(output_path))
+        try:
+            if os.path.commonpath([outputs_root, output_directory]) != outputs_root:
+                return ""
+        except ValueError:
+            return ""
+        return output_directory
+
+    @staticmethod
+    def _remove_empty_batch_output_parents(job):
+        output_directory = AutoDubController._batch_output_directory(job)
+        if not output_directory:
+            return
+        outputs_root = os.path.dirname(output_directory)
+        project_root = os.path.dirname(outputs_root)
+        for directory in (outputs_root, project_root):
+            try:
+                os.rmdir(directory)
+            except OSError:
+                # Keep non-empty folders and any folder currently in use.
+                pass
+
+    @Slot()
+    def deleteCurrentBatch(self):
+        batch_ids = list(self._batch_job_ids)
+        if not batch_ids:
+            return
+        project_name = self._project_name or "this batch"
+        message = (
+            "Delete this batch and all of its jobs?\n\n"
+            f"{project_name}\n{len(batch_ids)} video(s)\n\n"
+            "This removes job logs, temporary data, copied inputs, and generated batch outputs. "
+            "If processing is active, it will be stopped first."
+        )
+        buttons = QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+        if QMessageBox.question(
+            None,
+            "Delete batch",
+            message,
+            buttons,
+            QMessageBox.StandardButton.No,
+        ) != QMessageBox.StandardButton.Yes:
+            return
+
+        self._batch_stop_requested = True
+        active_job_id = self._processing_job_id
+        if active_job_id in batch_ids:
+            cancel_job(active_job_id)
+
+        failures = []
+        remaining_ids = []
+        for job_id in batch_ids:
+            job = job_store.get_job(job_id)
+            if not job:
+                continue
+            self._deleted_job_ids.add(job_id)
+            if job.status == "processing":
+                cancel_job(job_id)
+            output_directory = self._batch_output_directory(job)
+            try:
+                if output_directory and os.path.isdir(output_directory):
+                    shutil.rmtree(output_directory)
+                job_store.delete_job(job_id)
+                self._remove_empty_batch_output_parents(job)
+            except Exception as exc:
+                failures.append(f"{job.original_filename}: {exc}")
+                remaining_ids.append(job_id)
+
+        self._batch_job_ids = remaining_ids
+        self._refresh_batch_model()
+        self.batchChanged.emit()
+        self._selected_job_id = None
+        self._logs = ""
+        self.tasks.set_job(None)
+        self.selectedJobChanged.emit()
+        self.logsChanged.emit()
+        self.refreshJobs()
+
+        if failures:
+            QMessageBox.warning(
+                None,
+                "Batch delete incomplete",
+                "Some videos could not be deleted. You can retry after closing any program using them.\n\n"
+                + "\n".join(failures[:5]),
+            )
+            return
+        self.batchDeleted.emit()
 
     @Slot()
     def startJob(self):
@@ -964,19 +1247,22 @@ class AutoDubController(QObject):
 
     @Slot()
     def stopJob(self):
-        if self._batch_running:
-            self.stopBatch()
+        selected_job_id = self._selected_job_id
+        if not selected_job_id or selected_job_id != self._processing_job_id:
             return
-        if not self._processing_job_id:
+        selected_job = job_store.get_job(selected_job_id)
+        if not selected_job or selected_job.status != "processing":
+            return
+        if self._batch_running:
+            if selected_job_id in self._batch_job_ids:
+                self.stopBatch()
             return
         if QMessageBox.question(None, "Pause job", "Pause this job? You can resume it later from Projects.") != QMessageBox.StandardButton.Yes:
             return
-        job_id = self._processing_job_id
-        job = job_store.get_job(job_id)
-        resume_step = job.step if job else ""
-        pause_job(job_id)
-        job_store.update_job(job_id, status="paused", error=None, step="paused", resume_step=resume_step, step_detail=f"Paused during {resume_step or 'startup'}")
-        job_store.log_to_job(job_id, "Pause requested. Active subprocesses were stopped.")
+        resume_step = selected_job.step
+        pause_job(selected_job_id)
+        job_store.update_job(selected_job_id, status="paused", error=None, step="paused", resume_step=resume_step, step_detail=f"Paused during {resume_step or 'startup'}")
+        job_store.log_to_job(selected_job_id, "Pause requested. Active subprocesses were stopped.")
         self._processing_job_id = None
         self._is_processing = False
         self.processingChanged.emit()
@@ -1045,11 +1331,12 @@ class AutoDubController(QObject):
         self._selected_job_id = job.job_id
         self._project_name = job.project_name or os.path.splitext(job.original_filename)[0]
         self._project_directory = job.project_directory or self._project_directory
-        self._source_language = job.source_language
+        self._project_type = "batch" if getattr(job, "project_type", "single") == "batch" else "single"
+        if job.status != "processing" and (job.source_language != "auto" or job.output_format != "keep_ratio"):
+            job = job_store.update_job(job.job_id, source_language="auto", output_format="keep_ratio") or job
         self._workflow_mode = job.mode
         self._target_language = job.target_language
         self._tts_voice = job.tts_voice
-        self._output_format = job.output_format
         self._enable_audio_separation = job.enable_audio_separation
         self._original_volume = job.original_video_volume
         input_path = self._resolve_job_file(job, ("video_input", "input_video"), ("input", "video.mp4"))
@@ -1061,15 +1348,14 @@ class AutoDubController(QObject):
         self.tasks.set_job(job)
         self.videoPathChanged.emit()
         self.videoThumbnailChanged.emit()
-        self.sourceLanguageChanged.emit()
         self.targetLanguageChanged.emit()
         self.ttsVoiceChanged.emit()
-        self.outputFormatChanged.emit()
         self.enableAudioSeparationChanged.emit()
         self.originalVolumeChanged.emit()
         self.workflowModeChanged.emit()
         self.projectSetupChanged.emit()
         self.selectedJobChanged.emit()
+        self.processingChanged.emit()
         self.logsChanged.emit()
 
     @Slot(int)
@@ -1078,6 +1364,24 @@ class AutoDubController(QObject):
         if not job:
             return
         self._select_job(job)
+
+    @Slot(int)
+    def selectProject(self, row: int):
+        project = self.projects.project_at(row)
+        if not project:
+            return
+        jobs = project["jobs"]
+        if not jobs:
+            return
+        self._project_name = project["project_name"]
+        self._project_directory = project["project_directory"] or self._project_directory
+        self._project_type = project["project_type"]
+        self._batch_job_ids = [job.job_id for job in jobs] if self._project_type == "batch" else []
+        self._refresh_batch_model()
+        self._select_job(jobs[0])
+        self._project_type = project["project_type"]
+        self.projectSetupChanged.emit()
+        self.batchChanged.emit()
 
     @Slot()
     def deleteSelectedJob(self):
@@ -1119,13 +1423,14 @@ class AutoDubController(QObject):
 
     @Slot()
     def refreshJobs(self):
-        jobs = job_store.list_jobs()[:40]
-        self.jobs.set_jobs(jobs)
+        all_jobs = job_store.list_jobs()
+        self.jobs.set_jobs(all_jobs[:40])
+        self.projects.set_projects(self._build_project_summaries(all_jobs))
         self._refresh_batch_model()
         selected = job_store.get_job(self._selected_job_id) if self._selected_job_id else None
         self.tasks.set_job(selected)
         self.selectedJobChanged.emit()
-        missing_thumbnails = [job.job_id for job in jobs if not job.files.get("thumbnail")]
+        missing_thumbnails = [job.job_id for job in all_jobs if not job.files.get("thumbnail")]
         if missing_thumbnails and not self._thumbnail_refresh_running:
             self._thumbnail_refresh_running = True
             threading.Thread(target=self._create_missing_thumbnails, args=(missing_thumbnails,), daemon=True).start()
@@ -1151,7 +1456,31 @@ class AutoDubController(QObject):
         if not video_path or not os.path.exists(video_path):
             QMessageBox.information(None, "Input preview", "Choose an input video before opening the preview editor.")
             return
+        self._preview_edit_scope = "single_job" if selected_job else "draft"
+        self._preview_target_job_ids = [selected_job.job_id] if selected_job else []
+        self._preview_group_keys = []
+        self._preview_group_index = -1
+        self._preview_original_style = self._copy_subtitle_style(selected_job.subtitle_style) if selected_job else self._current_subtitle_style()
         self._open_preview(video_path, "Input Preview Editor", True)
+
+    @Slot()
+    def openBatchSubtitleEditor(self):
+        groups = self._batch_dimension_groups()
+        if not groups:
+            QMessageBox.information(None, "Subtitle presets", "Add at least one video before editing subtitles.")
+            return
+        self._preview_group_keys = [group["size_key"] for group in groups]
+        self._preview_group_index = 0
+        self._open_batch_group_preview(self._preview_group_keys[0])
+
+    @Slot(str)
+    def openBatchSizeEditor(self, size_key):
+        group = self._batch_dimension_group(size_key)
+        if not group:
+            return
+        self._preview_group_keys = [size_key]
+        self._preview_group_index = 0
+        self._open_batch_group_preview(size_key)
 
     @Slot()
     def openInputFile(self):
@@ -1190,6 +1519,42 @@ class AutoDubController(QObject):
         self._apply_preview_edits(subtitle_x, subtitle_y, box_width, box_height, font_size)
         self.previewChanged.emit()
 
+    @Slot(result=bool)
+    def commitPreviewEdits(self):
+        style = self._current_subtitle_style(self._preview_original_style)
+        if self._preview_edit_scope == "size_group":
+            for job_id in self._preview_target_job_ids:
+                job_store.update_job(job_id, subtitle_style=style, subtitle_override=False)
+            self._refresh_batch_model()
+            self.batchChanged.emit()
+            next_index = self._preview_group_index + 1
+            if next_index < len(self._preview_group_keys):
+                self._preview_group_index = next_index
+                self._open_batch_group_preview(self._preview_group_keys[next_index])
+                return False
+        elif self._preview_edit_scope == "single_job" and self._preview_target_job_ids:
+            job_id = self._preview_target_job_ids[0]
+            job = job_store.get_job(job_id)
+            if job:
+                job_store.update_job(
+                    job_id,
+                    subtitle_style=style,
+                    subtitle_override=job.project_type == "batch",
+                )
+                job_store.log_to_job(job_id, "Custom subtitle frame saved for this video.")
+                self.refreshJobs()
+                self.selectedJobChanged.emit()
+                self.batchChanged.emit()
+        self._clear_preview_edit_session()
+        return True
+
+    @Slot()
+    def cancelPreviewEdits(self):
+        if self._preview_original_style:
+            self._set_preview_style(self._preview_original_style)
+        self._clear_preview_edit_session()
+        self.previewChanged.emit()
+
     @Slot()
     def openJobFolder(self):
         if self._selected_job_id:
@@ -1212,7 +1577,7 @@ class AutoDubController(QObject):
     def _build_config(self):
         return JobConfig(
             mode=self._workflow_mode,
-            source_language=self._source_language,
+            source_language="auto",
             target_language=self._target_language,
             translator_provider="hymt2",
             tts_voice=self._tts_voice,
@@ -1226,12 +1591,13 @@ class AutoDubController(QObject):
                 box_width_percent=self._subtitle_box_width,
                 box_height_percent=self._subtitle_box_height,
             ),
-            output_format=self._output_format,
+            output_format="keep_ratio",
             crop=CropSettings(),
             enable_audio_separation=self._enable_audio_separation,
             original_video_volume=self._original_volume,
             project_name=self._project_name,
             project_directory=self._project_directory,
+            project_type=self._project_type,
         )
 
     def _apply_setup_to_job(self, job, review_approved=None):
@@ -1246,6 +1612,7 @@ class AutoDubController(QObject):
             "crop": config.crop,
             "enable_audio_separation": config.enable_audio_separation,
             "original_video_volume": config.original_video_volume,
+            "project_type": config.project_type,
         }
         if review_approved is not None:
             changes["review_approved"] = review_approved
@@ -1268,6 +1635,15 @@ class AutoDubController(QObject):
 
     def _run_batch_queue(self, pending_ids):
         try:
+            if pending_ids:
+                first_job_id = pending_ids[0]
+                # Do not hold up audio extraction while checking the shared
+                # runtimes. Locks in each model service prevent duplicate loads.
+                threading.Thread(
+                    target=self._prepare_batch_models,
+                    args=(first_job_id,),
+                    daemon=True,
+                ).start()
             for job_id in pending_ids:
                 if self._batch_stop_requested:
                     break
@@ -1280,6 +1656,20 @@ class AutoDubController(QObject):
                 self._log_queue.put(f"__BATCH_JOB_FINISHED__:{job_id}")
         finally:
             self._log_queue.put("__BATCH_FINISHED__")
+
+    @staticmethod
+    def _prepare_batch_models(job_id):
+        job_store.log_to_job(job_id, "Preparing shared WhisperX and HY-MT2 models for the batch.")
+        try:
+            warm_whisperx_model()
+            warm_hymt2_worker(lambda detail: job_store.log_to_job(job_id, detail))
+            job_store.log_to_job(
+                job_id,
+                "Shared models are ready and will be reused for every video in this batch.",
+            )
+        except Exception as exc:
+            # The job pipeline can retry initialization at the point of use.
+            job_store.log_to_job(job_id, f"Batch model preparation deferred: {exc}")
 
     def _on_job_log(self, job_id, line):
         if job_id == self._selected_job_id:
@@ -1307,6 +1697,7 @@ class AutoDubController(QObject):
                 self.batchChanged.emit()
             elif item.startswith("__BATCH_JOB_FINISHED__:"):
                 self.refreshJobs()
+                self.processingChanged.emit()
                 self.batchChanged.emit()
             elif item == "__BATCH_FINISHED__":
                 self._processing_job_id = None
@@ -1338,10 +1729,108 @@ class AutoDubController(QObject):
         for job_id in self._batch_job_ids:
             job = job_store.get_job(job_id)
             if job:
+                job = self._ensure_job_dimensions(job)
                 valid_ids.append(job_id)
                 jobs.append(job)
         self._batch_job_ids = valid_ids
         self.batch_jobs.set_jobs(jobs)
+
+    def _ensure_job_dimensions(self, job):
+        if job.video_width > 0 and job.video_height > 0:
+            return job
+        video_path = self._resolve_job_file(job, ("video_input", "input_video"), ("input", "video.mp4"))
+        try:
+            width, height = get_video_dimensions(video_path)
+        except RuntimeError:
+            return job
+        return job_store.update_job(job.job_id, video_width=width, video_height=height) or job
+
+    def _batch_dimension_groups(self):
+        grouped = {}
+        for job_id in self._batch_job_ids:
+            job = job_store.get_job(job_id)
+            if not job:
+                continue
+            job = self._ensure_job_dimensions(job)
+            if job.video_width > 0 and job.video_height > 0:
+                size_key = f"{job.video_width}x{job.video_height}"
+                label = f"{job.video_width} x {job.video_height}"
+            else:
+                size_key = f"unknown:{job.job_id}"
+                label = "Unknown size"
+            group = grouped.setdefault(size_key, {"size_key": size_key, "label": label, "jobs": []})
+            group["jobs"].append(job)
+        return sorted(
+            grouped.values(),
+            key=lambda group: (
+                -(group["jobs"][0].video_width * group["jobs"][0].video_height),
+                group["label"],
+            ),
+        )
+
+    def _batch_dimension_group(self, size_key):
+        return next((group for group in self._batch_dimension_groups() if group["size_key"] == size_key), None)
+
+    @staticmethod
+    def _build_project_summaries(jobs):
+        grouped = {}
+        for job in jobs:
+            project_type = "batch" if getattr(job, "project_type", "single") == "batch" else "single"
+            project_name = job.project_name or os.path.splitext(job.original_filename)[0]
+            project_directory = job.project_directory or ""
+            key = (
+                f"batch:{project_directory.lower()}:{project_name.lower()}"
+                if project_type == "batch"
+                else f"single:{job.job_id}"
+            )
+            project = grouped.setdefault(
+                key,
+                {
+                    "key": key,
+                    "project_name": project_name,
+                    "project_directory": project_directory,
+                    "project_type": project_type,
+                    "jobs": [],
+                },
+            )
+            project["jobs"].append(job)
+
+        summaries = []
+        for project in grouped.values():
+            project_jobs = project["jobs"]
+            statuses = {job.status for job in project_jobs}
+            if "processing" in statuses:
+                status = "processing"
+            elif "awaiting_review" in statuses:
+                status = "awaiting_review"
+            elif "paused" in statuses:
+                status = "paused"
+            elif "pending" in statuses:
+                status = "pending"
+            elif all(job.status == "done" for job in project_jobs):
+                status = "done"
+            elif "failed" in statuses:
+                status = "failed"
+            elif "cancelled" in statuses:
+                status = "cancelled"
+            else:
+                status = project_jobs[0].status
+            thumbnail_source = ""
+            for job in project_jobs:
+                thumbnail_source = JobListModel._thumbnail_source(job)
+                if thumbnail_source:
+                    break
+            summaries.append(
+                {
+                    **project,
+                    "job_count": len(project_jobs),
+                    "status": status,
+                    "progress": round(sum(job.progress for job in project_jobs) / len(project_jobs)),
+                    "thumbnail_source": thumbnail_source,
+                    "updated_at": max(job.updated_at for job in project_jobs),
+                }
+            )
+        return sorted(summaries, key=lambda project: project["updated_at"], reverse=True)
 
     @staticmethod
     def _normalize_video_path(value) -> str:
@@ -1352,6 +1841,39 @@ class AutoDubController(QObject):
         if url.isLocalFile():
             return os.path.abspath(url.toLocalFile())
         return os.path.abspath(raw_path)
+
+    @classmethod
+    def _collect_batch_video_paths(cls, paths):
+        valid_paths = []
+        invalid_names = []
+        seen_paths = set()
+
+        def add_if_supported(path):
+            normalized_path = os.path.abspath(path)
+            extension = os.path.splitext(normalized_path)[1].lower()
+            if extension in SUPPORTED_VIDEO_EXTENSIONS and normalized_path not in seen_paths:
+                seen_paths.add(normalized_path)
+                valid_paths.append(normalized_path)
+
+        for value in paths:
+            path = cls._normalize_video_path(value)
+            if os.path.isdir(path):
+                try:
+                    with os.scandir(path) as entries:
+                        for entry in sorted(entries, key=lambda item: item.name.lower()):
+                            if entry.is_file():
+                                add_if_supported(entry.path)
+                except OSError as exc:
+                    invalid_names.append(f"{os.path.basename(path) or path}: {exc}")
+            elif os.path.isfile(path):
+                if os.path.splitext(path)[1].lower() in SUPPORTED_VIDEO_EXTENSIONS:
+                    add_if_supported(path)
+                else:
+                    invalid_names.append(os.path.basename(path) or path)
+            elif path:
+                invalid_names.append(os.path.basename(path) or path)
+
+        return valid_paths, invalid_names
 
     @staticmethod
     def _resolve_job_file(job, keys, fallback_parts):
@@ -1405,6 +1927,53 @@ class AutoDubController(QObject):
         self._subtitle_box_width = job.subtitle_style.box_width_percent
         self._subtitle_box_height = job.subtitle_style.box_height_percent
         self.previewChanged.emit()
+
+    @staticmethod
+    def _copy_subtitle_style(style):
+        data = style.model_dump() if hasattr(style, "model_dump") else style.dict()
+        return SubtitleStyle(**data)
+
+    def _current_subtitle_style(self, base=None):
+        base = base or SubtitleStyle()
+        return SubtitleStyle(
+            font_size=self._caption_font_size,
+            margin_bottom=base.margin_bottom,
+            outline=base.outline,
+            max_chars_per_line=base.max_chars_per_line,
+            position_x_percent=self._subtitle_position_x,
+            position_y_percent=self._subtitle_position_y,
+            box_width_percent=self._subtitle_box_width,
+            box_height_percent=self._subtitle_box_height,
+        )
+
+    def _set_preview_style(self, style):
+        self._subtitle_position_x = style.position_x_percent
+        self._subtitle_position_y = style.position_y_percent
+        self._caption_font_size = style.font_size
+        self._subtitle_box_width = style.box_width_percent
+        self._subtitle_box_height = style.box_height_percent
+
+    def _open_batch_group_preview(self, size_key):
+        group = self._batch_dimension_group(size_key)
+        if not group:
+            self._clear_preview_edit_session()
+            return
+        representative = group["jobs"][0]
+        video_path = self._resolve_job_file(representative, ("video_input", "input_video"), ("input", "video.mp4"))
+        self._preview_edit_scope = "size_group"
+        self._preview_target_job_ids = [job.job_id for job in group["jobs"]]
+        self._preview_original_style = self._copy_subtitle_style(representative.subtitle_style)
+        self._set_preview_style(representative.subtitle_style)
+        index_label = f"{self._preview_group_index + 1}/{len(self._preview_group_keys)}"
+        title = f"{group['label']} | {index_label}"
+        self._open_preview(video_path, title, True)
+
+    def _clear_preview_edit_session(self):
+        self._preview_edit_scope = "draft"
+        self._preview_target_job_ids = []
+        self._preview_group_keys = []
+        self._preview_group_index = -1
+        self._preview_original_style = None
 
     def _apply_preview_edits(self, subtitle_x, subtitle_y, box_width, box_height, font_size):
         self._subtitle_position_x = max(0, min(100, int(subtitle_x)))

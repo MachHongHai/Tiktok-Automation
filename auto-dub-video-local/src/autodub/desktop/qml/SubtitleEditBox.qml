@@ -58,7 +58,7 @@ Item {
 
     Rectangle {
         anchors.fill: parent
-        color: "#99121417"
+        color: Theme.captionOverlay
         border.width: 2
         border.color: Theme.interactive
         radius: Theme.radiusSmall
@@ -67,8 +67,8 @@ Item {
     Text {
         anchors.fill: parent
         anchors.margins: 5
-        text: qsTr("Subtitle preview")
-        color: "#ffffff"
+        text: I18n.t("Subtitle preview")
+        color: Theme.captionText
         horizontalAlignment: Text.AlignHCenter
         verticalAlignment: Text.AlignVCenter
         font.pixelSize: 160

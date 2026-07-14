@@ -1,55 +1,97 @@
+pragma ComponentBehavior: Bound
+
 import QtQuick
 import QtQuick.Controls.Basic
 import QtQuick.Layouts
 import "."
 
-ColumnLayout {
+Item {
     id: root
 
     signal requestNewProject()
-    signal openProject()
+    signal openProject(string projectType)
 
-    spacing: Theme.gap
-
-    PageHeader {
-        Layout.fillWidth: true
-        title: I18n.t("Projects")
-        subtitle: I18n.t("Create a project or reopen previous work.")
-
-        AppButton {
-            text: I18n.t("New project")
-            tone: "primary"
-            onClicked: root.requestNewProject()
+    opacity: visible ? 1 : 0
+    transform: Translate {
+        y: root.visible ? 0 : 8
+        Behavior on y {
+            NumberAnimation { duration: Theme.motionStandard; easing.type: Easing.OutCubic }
         }
     }
+    Behavior on opacity {
+        NumberAnimation { duration: Theme.motionStandard }
+    }
 
-    Panel {
-        Layout.fillWidth: true
-        Layout.fillHeight: true
-        title: I18n.t("Recent projects")
-        subtitle: I18n.t("Select a project to inspect its job and output.")
+    ColumnLayout {
+        anchors.fill: parent
+        spacing: Theme.space20
+
+        PageHeader {
+            Layout.fillWidth: true
+            title: I18n.t("Projects")
+        }
+
+        Rectangle {
+            Layout.fillWidth: true
+            Layout.preferredHeight: 1
+            color: Theme.divider
+        }
+
+        RowLayout {
+            Layout.fillWidth: true
+            spacing: Theme.space12
+
+            Text {
+                Layout.fillWidth: true
+                text: I18n.t("Recent projects")
+                color: Theme.text
+                font.pixelSize: Theme.h2
+                font.weight: Font.DemiBold
+                textFormat: Text.PlainText
+            }
+
+            IconButton {
+                glyph: "\uE72C"
+                toolTipText: I18n.t("Refresh")
+                onClicked: controller.refreshJobs()
+            }
+        }
 
         Flickable {
             id: projectFlick
+
+            readonly property int columnCount: Math.max(2, Math.floor((width + projectFlow.spacing) / 270))
+            readonly property real cardWidth: Math.min(320, Math.floor((width - (columnCount - 1) * projectFlow.spacing) / columnCount))
+
             Layout.fillWidth: true
             Layout.fillHeight: true
             clip: true
             contentWidth: width
-            contentHeight: projectFlow.height
+            contentHeight: projectFlow.height + 8
+            boundsBehavior: Flickable.StopAtBounds
 
             Flow {
                 id: projectFlow
                 width: projectFlick.width
                 height: childrenRect.height
-                spacing: 14
+                spacing: Theme.space16
 
                 Rectangle {
-                    width: 224
-                    height: 190
+                    id: newProjectCard
+
+                    width: projectFlick.cardWidth
+                    height: Math.round(width * 0.58 + 82)
                     radius: Theme.radius
                     color: newProjectHover.hovered ? Theme.interactiveMuted : Theme.surfaceElevated
-                    border.width: 1
-                    border.color: newProjectHover.hovered ? Theme.interactive : Theme.outline
+                    border.width: activeFocus ? 2 : 1
+                    border.color: activeFocus || newProjectHover.hovered ? Theme.focus : Theme.outline
+                    activeFocusOnTab: true
+                    Accessible.role: Accessible.Button
+                    Accessible.name: I18n.t("New project")
+                    scale: newProjectTap.pressed ? 0.99 : 1
+
+                    Keys.onReturnPressed: root.requestNewProject()
+                    Keys.onSpacePressed: root.requestNewProject()
 
                     HoverHandler {
                         id: newProjectHover
@@ -57,54 +99,79 @@ ColumnLayout {
                     }
 
                     TapHandler {
-                        onTapped: root.requestNewProject()
+                        id: newProjectTap
+                        onTapped: {
+                            newProjectCard.forceActiveFocus()
+                            root.requestNewProject()
+                        }
                     }
 
                     Column {
                         anchors.centerIn: parent
-                        spacing: 10
+                        width: Math.min(parent.width - 40, 230)
+                        spacing: Theme.space12
 
                         Rectangle {
                             anchors.horizontalCenter: parent.horizontalCenter
-                            width: 42
-                            height: 42
-                            radius: 21
-                            color: Theme.interactiveMuted
-                            border.width: 1
-                            border.color: Theme.interactive
+                            width: 44
+                            height: 44
+                            radius: 22
+                            color: Theme.interactive
 
-                            Text {
+                            AppIcon {
                                 anchors.centerIn: parent
-                                text: "+"
-                                color: Theme.interactive
-                                font.pixelSize: Theme.h2
-                                textFormat: Text.PlainText
+                                width: 20
+                                height: 20
+                                glyph: "\uE710"
+                                iconColor: Theme.textOnAccent
+                                iconSize: Theme.icon
                             }
                         }
 
                         Text {
+                            width: parent.width
                             text: I18n.t("New project")
                             color: Theme.text
-                            font.pixelSize: Theme.body
-                            font.weight: Font.Medium
+                            font.pixelSize: Theme.bodyLarge
+                            font.weight: Font.DemiBold
+                            horizontalAlignment: Text.AlignHCenter
                             textFormat: Text.PlainText
                         }
+
+                        Text {
+                            width: parent.width
+                            text: I18n.t("Single video or batch")
+                            color: Theme.textMuted
+                            font.pixelSize: Theme.caption
+                            horizontalAlignment: Text.AlignHCenter
+                            textFormat: Text.PlainText
+                        }
+                    }
+
+                    Behavior on color {
+                        ColorAnimation { duration: Theme.motionFast }
+                    }
+                    Behavior on scale {
+                        NumberAnimation { duration: Theme.motionFast; easing.type: Easing.OutCubic }
                     }
                 }
 
                 Repeater {
-                    model: controller.jobModel
+                    model: controller.projectModel
 
                     delegate: ProjectCard {
+                        width: projectFlick.cardWidth
                         onActivated: {
-                            controller.selectJob(index)
-                            root.openProject()
+                            controller.selectProject(index)
+                            root.openProject(projectType)
                         }
                     }
                 }
             }
 
-            ScrollBar.vertical: ScrollBar {}
+            ScrollBar.vertical: ScrollBar {
+                policy: ScrollBar.AsNeeded
+            }
         }
     }
 }

@@ -23,17 +23,18 @@ class CropSettings(BaseModel):
 
 class JobConfig(BaseModel):
     mode: str = "A"  # A = full auto, review = pause after translation.
-    source_language: str = "auto"  # zh, en, auto
+    source_language: str = "auto"  # Automatic detection is performed for every speech segment.
     target_language: str = "vi"
     translator_provider: str = "hymt2"
     tts_voice: str = "vi-VN-HoaiMyNeural"
     subtitle_style: SubtitleStyle = Field(default_factory=SubtitleStyle)
-    output_format: str = "keep_ratio"  # tiktok_9_16_crop, keep_ratio, blur_background_9_16
+    output_format: str = "keep_ratio"  # The desktop workflow preserves the original aspect ratio.
     crop: CropSettings = Field(default_factory=CropSettings)
     enable_audio_separation: bool = False
     original_video_volume: int = 60
     project_name: str = ""
     project_directory: str = ""
+    project_type: str = "single"
     review_approved: bool = False
 
 class JobInfo(BaseModel):
@@ -51,6 +52,10 @@ class JobInfo(BaseModel):
     original_video_volume: int = 60
     project_name: str = ""
     project_directory: str = ""
+    project_type: str = "single"
+    video_width: int = 0
+    video_height: int = 0
+    subtitle_override: bool = False
     review_approved: bool = False
     status: str  # pending, processing, done, failed
     progress: int = 0

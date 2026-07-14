@@ -21,7 +21,7 @@ RowLayout {
 
     Text {
         Layout.fillWidth: true
-        text: root.path || qsTr("Not available")
+        text: root.path || I18n.t("Not available")
         color: root.path ? Theme.text : Theme.textMuted
         font.pixelSize: Theme.caption
         textFormat: Text.PlainText

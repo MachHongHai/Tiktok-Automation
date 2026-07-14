@@ -7,32 +7,101 @@ QtObject {
     function t(source) {
         if (language !== "vi")
             return source
+
         const vi = {
-            "Create": "Tạo mới",
-            "Projects": "Projects",
-            "Workspace": "Không gian xử lý",
-            "Batch": "Hàng đợi",
-            "Job Detail": "Chi tiết công việc",
+            "Workspace": "Không gian làm việc",
             "WORKSPACE": "KHÔNG GIAN LÀM VIỆC",
+            "Projects": "Dự án",
+            "Batch": "Hàng loạt",
             "Settings": "Cài đặt",
-            "Appearance": "Giao diện",
-            "Theme": "Chủ đề",
-            "Dark": "Tối",
-            "Light": "Sáng",
-            "Language": "Ngôn ngữ",
-            "English": "Tiếng Anh",
-            "Vietnamese": "Tiếng Việt",
+            "Back": "Quay lại",
+            "Close": "Đóng",
+            "Cancel": "Hủy",
+            "Continue": "Tiếp tục",
             "Browse": "Chọn thư mục",
-            "Apply settings": "Áp dụng cài đặt",
-            "Reset defaults": "Khôi phục mặc định",
+            "Browse files": "Chọn tệp",
+            "Refresh": "Làm mới",
+            "More actions": "Thao tác khác",
+            "More import options": "Tùy chọn thêm video",
+
+            "Create project": "Tạo dự án",
+            "Project name": "Tên dự án",
+            "Project folder": "Thư mục dự án",
+            "Project type": "Loại dự án",
+            "Single video": "Một video",
+            "Batch videos": "Nhiều video",
+            "New project": "Dự án mới",
+            "Recent projects": "Dự án gần đây",
+            "Create a project or reopen previous work.": "Tạo dự án mới hoặc tiếp tục công việc trước đó.",
+            "Select a project to inspect its job and output.": "Chọn dự án để xem tiến trình và tệp đầu ra.",
+            "Start with one source video": "Bắt đầu với một video nguồn",
+            "Single video or batch": "Một video hoặc hàng loạt",
+            "No preview": "Chưa có hình xem trước",
+
+            "Queued": "Đang chờ",
+            "Processing": "Đang xử lý",
+            "Complete": "Hoàn tất",
+            "Failed": "Lỗi",
+            "Cancelled": "Đã hủy",
+            "Paused": "Đã tạm dừng",
+            "Review needed": "Cần duyệt",
+            "done": "Hoàn tất",
+            "pending": "Đang chờ",
+            "processing": "Đang xử lý",
+            "failed": "Lỗi",
+            "cancelled": "Đã hủy",
+            "paused": "Đã tạm dừng",
+            "awaiting_review": "Cần duyệt bản dịch",
+
+            "Batch queue": "Hàng đợi xử lý",
+            "Batch project": "Dự án hàng loạt",
+            "Process a video collection with one shared dubbing setup.": "Xử lý nhiều video bằng một thiết lập lồng tiếng dùng chung.",
+            "Clear": "Xóa danh sách",
+            "Delete batch": "Xóa batch",
+            "Add videos": "Thêm video",
+            "Add folder": "Thêm thư mục",
+            "Start queue": "Bắt đầu xử lý",
+            "Stop queue": "Dừng hàng đợi",
+            "Videos": "Video",
+            "videos": "video",
+            "Completed": "Hoàn tất",
+            "Target": "Ngôn ngữ đích",
+            "Mixed settings": "Thiết lập riêng theo video",
+            "Queue processing": "Đang xử lý hàng đợi",
+            "Overall progress": "Tiến độ tổng",
+            "Drop videos into the queue": "Thả video vào hàng đợi",
+            "Drop videos or a folder into the queue": "Thả video hoặc thư mục vào hàng đợi",
+            "Release to add videos": "Thả để thêm video",
+            "MP4, MOV or MKV; multiple files are supported": "Hỗ trợ nhiều tệp MP4, MOV hoặc MKV",
+            "Only MP4, MOV and MKV files are added": "Chỉ thêm tệp MP4, MOV và MKV",
+            "Browse folder": "Chọn thư mục",
+            "Video jobs": "Danh sách video",
+            "Your queue is empty": "Hàng đợi đang trống",
+            "Add videos above to begin a batch": "Thêm video ở phía trên để bắt đầu xử lý",
+            "items": "mục",
+            "Batch settings": "Thiết lập hàng loạt",
+            "Batch setup": "Thiết lập batch",
+            "Configure this batch": "Thiết lập lồng tiếng và phụ đề cho batch này",
+            "Configure dubbing and subtitle presets for this batch": "Thiết lập lồng tiếng và khung phụ đề cho hàng loạt video",
+            "Dubbing and audio": "Lồng tiếng và âm thanh",
+            "One subtitle frame is shared by each video size": "Mỗi kích thước video dùng chung một khung phụ đề",
+            "Edit": "Chỉnh sửa",
+            "Apply shared dubbing defaults to every video": "Áp dụng thiết lập lồng tiếng chung cho tất cả video",
+            "Apply to all videos": "Áp dụng cho tất cả video",
+            "Edit all subtitles": "Chỉnh phụ đề toàn bộ",
+            "Subtitle presets by video size": "Khung phụ đề theo kích thước video",
+            "Subtitle presets": "Khung phụ đề",
+            "sizes": "kích thước",
+            "custom": "tùy chỉnh",
+            "Custom": "Tùy chỉnh",
+            "Edit this size": "Chỉnh kích thước này",
+            "Save video settings": "Lưu thiết lập video",
+            "Unknown size": "Chưa xác định kích thước",
+
             "Create a new dub": "Tạo video lồng tiếng mới",
-            "Turn one source video into a translated, voiced and captioned export.": "Chuyển video nguồn thành bản dịch, lồng tiếng và phụ đề.",
+            "Turn one source video into a translated, voiced and captioned export.": "Chuyển video nguồn thành bản dịch, giọng đọc và phụ đề hoàn chỉnh.",
             "Source media": "Video nguồn",
             "Input video and subtitle placement": "Video đầu vào và vị trí phụ đề",
-            "Dubbing setup": "Thiết lập lồng tiếng",
-            "Language, voice and output behavior": "Ngôn ngữ, giọng đọc và định dạng xuất",
-            "Activity log": "Nhật ký hoạt động",
-            "Live processing output": "Tiến trình xử lý trực tiếp",
             "Select a source video": "Chọn video nguồn",
             "Drop video to import": "Thả video để nhập",
             "Release to add the source file": "Thả để thêm video nguồn",
@@ -41,72 +110,82 @@ QtObject {
             "Choose a file to begin": "Chọn một tệp để bắt đầu",
             "Replace": "Thay thế",
             "Edit subtitle frame": "Chỉnh khung phụ đề",
-            "Full Auto workflow": "Quy trình tự động",
-            "Source": "Nguồn",
+
+            "Dubbing setup": "Thiết lập lồng tiếng",
+            "Language, voice and output behavior": "Ngôn ngữ, giọng đọc và cách xử lý âm thanh",
+            "Workflow": "Quy trình",
+            "Full auto": "Tự động",
+            "Review then dub": "Duyệt trước khi lồng tiếng",
             "Translate to": "Dịch sang",
+            "Search language": "Tìm ngôn ngữ",
             "Voice": "Giọng đọc",
-            "Layout": "Bố cục",
-            "Separate vocals for music or noisy audio": "Tách giọng nói khi có nhạc hoặc tạp âm",
-            "Match voices to detected speakers": "Tự ghép giọng theo người nói",
+            "Separate vocals for music or noisy audio": "Tách giọng khi video có nhạc hoặc tạp âm",
             "Original audio": "Âm thanh gốc",
+            "A job is already processing": "Đang xử lý một công việc khác",
             "Create and process": "Tạo và xử lý",
-            "Open output": "Mở video xuất",
-            "Stop": "Dừng",
-            "No active job": "Không có job đang chạy",
-            "Last export ready": "Bản xuất gần nhất đã sẵn sàng",
-            "Processing status will appear here": "Trạng thái xử lý sẽ hiển thị tại đây",
-            "Appearance, language and output location": "Giao diện, ngôn ngữ và nơi xuất video",
+
+            "Activity log": "Nhật ký hoạt động",
+            "Live processing output": "Nhật ký xử lý trực tiếp",
+            "Logs will appear here while a job is processing.": "Nhật ký sẽ xuất hiện tại đây khi video được xử lý.",
+            "No logs loaded.": "Chưa có nhật ký.",
+
+            "Ready to process": "Sẵn sàng xử lý",
+            "Last export ready": "Video xuất đã sẵn sàng",
+            "Ready": "Sẵn sàng",
+            "Preparing project": "Đang chuẩn bị dự án",
+            "Extracting audio": "Đang trích xuất âm thanh",
+            "Separating vocals": "Đang tách giọng",
+            "Transcribing speech": "Đang nhận diện lời nói",
+            "Translating": "Đang dịch",
+            "Waiting for translation review": "Đang chờ duyệt bản dịch",
+            "Creating subtitles": "Đang tạo phụ đề",
+            "Generating voice": "Đang tạo giọng đọc",
+            "Mixing audio": "Đang phối âm thanh",
+            "Rendering video": "Đang kết xuất video",
+            "Export complete": "Xuất video hoàn tất",
+            "Final video ready": "Video đầu ra đã sẵn sàng",
+            "Processing status will appear here": "Trạng thái xử lý sẽ xuất hiện tại đây",
+            "Time running": "Thời gian đã chạy",
+            "Processing time": "Thời gian xử lý",
+            "Resume": "Tiếp tục",
+            "Restart": "Chạy lại",
+            "Pause": "Tạm dừng",
+            "Review translation": "Duyệt bản dịch",
+            "Open input video": "Mở video nguồn",
+            "Open output video": "Mở video đầu ra",
+            "Open output folder": "Mở thư mục đầu ra",
+            "Delete job": "Xóa công việc",
+
             "Appearance and language": "Giao diện và ngôn ngữ",
-            "Apply changes instantly across the desktop app": "Áp dụng thay đổi ngay trong ứng dụng",
-            "Create project": "Tạo project",
-            "Name this project and choose where its final video will be saved.": "Đặt tên project và chọn nơi lưu video hoàn tất.",
-            "Project name": "Tên project",
-            "Project folder": "Thư mục project",
-            "Example: Summer campaign": "Ví dụ: Chiến dịch mùa hè",
-            "The final video will be saved inside a folder named after this project.": "Video hoàn tất sẽ được lưu trong thư mục mang tên project.",
-            "Cancel": "Hủy"
-            ,"Close": "Đóng"
-            ,"Continue": "Tiếp tục"
-            ,"Create a project or reopen previous work.": "Tạo project mới hoặc mở lại công việc trước đây."
-            ,"New project": "Project mới"
-            ,"Recent projects": "Project gần đây"
-            ,"Select a project to inspect its job and output.": "Chọn project để xem job và video xuất."
-            ,"No preview": "Chưa có preview"
-            ,"Batch queue": "Hàng đợi xử lý"
-            ,"Process a video collection with one shared dubbing setup.": "Xử lý nhiều video với một thiết lập lồng tiếng chung."
-            ,"Clear": "Xóa danh sách"
-            ,"Add videos": "Thêm video"
-            ,"Running queue": "Đang chạy hàng đợi"
-            ,"Start queue": "Bắt đầu hàng đợi"
-            ,"Videos": "Video"
-            ,"Completed": "Hoàn tất"
-            ,"Target": "Ngôn ngữ đích"
-            ,"Queue processing": "Đang xử lý hàng đợi"
-            ,"Overall progress": "Tiến độ tổng"
-            ,"Video jobs": "Các video trong hàng đợi"
-            ,"Add videos to build a batch": "Thêm video để tạo hàng đợi"
-            ,"Drop MP4, MOV or MKV files here": "Thả tệp MP4, MOV hoặc MKV tại đây"
-            ,"Job library": "Thư viện job"
-            ,"Review every run, inspect progress and reopen finished exports.": "Xem lại các lần chạy, theo dõi tiến độ và mở video đã hoàn tất."
-            ,"Refresh": "Làm mới"
-            ,"Recent jobs": "Job gần đây"
-            ,"Newest activity appears first": "Hoạt động mới nhất hiển thị trước"
-            ,"Back": "Quay lại"
-            ,"Run status": "Trạng thái chạy"
-            ,"Live pipeline progress": "Tiến độ pipeline trực tiếp"
-            ,"Status": "Trạng thái"
-            ,"Output": "Đầu ra"
-            ,"Elapsed": "Đã chạy"
-            ,"Time running": "Thời gian đã chạy"
-            ,"Processing time": "Tổng thời gian xử lý"
-            ,"Estimated remaining": "Còn ước tính"
-            ,"Actions": "Thao tác"
-            ,"Open input video": "Mở video nguồn"
-            ,"Open output video": "Mở video xuất"
-            ,"Open output folder": "Mở thư mục xuất"
-            ,"Open job folder": "Mở thư mục job"
-            ,"Delete job": "Xóa job"
-            ,"Processing output for this job": "Tiến trình xử lý của job này"
+            "Theme": "Chủ đề",
+            "Dark": "Tối",
+            "Light": "Sáng",
+            "Choose the application appearance": "Chọn giao diện hiển thị của ứng dụng",
+            "Language": "Ngôn ngữ",
+            "English": "Tiếng Anh",
+            "Vietnamese": "Tiếng Việt",
+            "Choose the interface language": "Chọn ngôn ngữ hiển thị",
+            "Reset defaults": "Khôi phục mặc định",
+            "Apply settings": "Áp dụng",
+
+            "Approve and continue": "Duyệt và tiếp tục",
+            "segments": "câu phụ đề",
+            "Segment": "Câu",
+
+            "Input Preview Editor": "Chỉnh khung phụ đề",
+            "Subtitle frame editor": "Chỉnh khung phụ đề",
+            "Video preview": "Xem trước video",
+            "Subtitle placement": "Vị trí phụ đề",
+            "Output preview": "Xem trước đầu ra",
+            "Video timeline": "Dòng thời gian video",
+            "Drag the frame or resize from any edge": "Kéo để di chuyển hoặc thay đổi kích thước từ các cạnh",
+            "Review the rendered output": "Xem lại video đã xuất",
+            "Play": "Phát",
+            "Subtitle preview": "Phụ đề mẫu",
+            "Apply to this size": "Áp dụng cho kích thước này",
+            "Save subtitle frame": "Lưu khung phụ đề",
+            "Not available": "Chưa có",
+            "Open job": "Mở công việc"
         }
         return vi[source] || source
     }

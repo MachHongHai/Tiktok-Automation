@@ -92,7 +92,8 @@ def process_job_sync(job_id: str):
         temp_audio_wav = os.path.join(job_dir, "temp", "audio.wav")
         source_segments_json = os.path.join(job_dir, "temp", "source_segments.json")
         translation_signature = _signature(
-            _file_state(video_input), job.source_language, job.target_language, job.enable_audio_separation, "hymt2"
+            _file_state(video_input), "auto-per-subtitle-v2", "hymt2-official-context-greedy-v4",
+            job.target_language, job.enable_audio_separation, "hymt2"
         )
 
         if _checkpoint_valid(job, "translation", translation_signature, [transcript_json]):
@@ -146,17 +147,16 @@ def process_job_sync(job_id: str):
 
         check_cancellation(job_id)
         reporter.update(50, "translating", "Starting HY-MT2 translation")
-        def report_translation_progress(current, total):
-            detail = f"Translating segment {current} of {total}"
-            reporter.update(50 + round(12 * current / max(1, total)), "translating", detail, current, total)
-            log_to_job(job_id, detail)
+        def report_translation_progress(current, total, detail):
+            progress = 50 + round(12 * current / total) if total else 50
+            reporter.update(progress, "translating", detail, current, total)
 
         translate_segments(
             source_segments_json,
             transcript_json,
             job_id,
             job.target_language,
-            source_language=detected_language or job.source_language,
+            source_language=detected_language or "en",
             provider="hymt2",
             progress_callback=report_translation_progress,
         )

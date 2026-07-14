@@ -9,34 +9,38 @@ RowLayout {
     property string subtitle: ""
     default property alias actions: actionArea.data
 
-    spacing: 18
+    spacing: Theme.space24
 
     ColumnLayout {
         Layout.fillWidth: true
-        spacing: 5
+        spacing: Theme.space4
 
         Text {
             Layout.fillWidth: true
             text: root.title
             color: Theme.text
             font.pixelSize: Theme.h1
-            font.weight: Font.Medium
+            font.weight: Font.DemiBold
             textFormat: Text.PlainText
-            elide: Text.ElideRight
+            elide: Text.ElideNone
+            wrapMode: Text.WordWrap
         }
 
         Text {
             Layout.fillWidth: true
+            visible: root.subtitle.length > 0
             text: root.subtitle
             color: Theme.textMuted
             font.pixelSize: Theme.body
             textFormat: Text.PlainText
-            elide: Text.ElideRight
+            elide: Text.ElideNone
+            wrapMode: Text.WordWrap
         }
     }
 
     RowLayout {
         id: actionArea
-        spacing: 10
+        Layout.alignment: Qt.AlignTop
+        spacing: Theme.space8
     }
 }
