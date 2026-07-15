@@ -12,6 +12,7 @@ if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
 from autodub.pipeline import process_job
+from autodub.services import translation
 
 
 class GpuRecoveryTests(unittest.TestCase):
@@ -67,6 +68,41 @@ class GpuRecoveryTests(unittest.TestCase):
             self.assertFalse(
                 process_job._recover_gpu_to_cpu("video-1", "translating", RuntimeError("CUDA device lost"))
             )
+
+    def test_windows_commit_limit_is_reported_without_hiding_it_behind_cpu_recovery(self):
+        profile = SimpleNamespace(cuda_available=True)
+        with mock.patch.object(process_job, "runtime_profile", return_value=profile):
+            self.assertFalse(
+                process_job._is_gpu_runtime_failure(
+                    OSError("The paging file is too small for this operation to complete. (os error 1455)")
+                )
+            )
+
+    def test_native_torch_crash_is_reported_without_automatic_fallback(self):
+        profile = SimpleNamespace(cuda_available=True)
+        with mock.patch.object(process_job, "runtime_profile", return_value=profile):
+            self.assertFalse(
+                process_job._is_gpu_runtime_failure(
+                    RuntimeError("Native Torch crash (0xC0000005) while loading HY-MT2")
+                )
+            )
+
+    def test_native_worker_exit_reports_hex_stage_and_diagnostic_file(self):
+        worker_output = [
+            '{"event":"diagnostic","detail":{"stage":"weights_load_start"}}\n',
+            "Windows fatal exception: access violation\n",
+        ]
+        message = translation._format_worker_exit(
+            3221225477,
+            "model warm-up",
+            worker_output,
+            r"D:\\AutoDubData\\logs\\hymt2-workers\\worker.log",
+        )
+
+        self.assertIn("0xC0000005", message)
+        self.assertIn("weights_load_start", message)
+        self.assertIn("worker.log", message)
+        self.assertIn("access violation", message)
 
 
 if __name__ == "__main__":

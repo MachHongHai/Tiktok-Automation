@@ -68,7 +68,8 @@ class CpuRuntimeTests(unittest.TestCase):
 
         marketed_eight_gib = self._profile(cuda=True, vram_gib=8, ram_gib=16, cpu_count=12)
         self.assertEqual(marketed_eight_gib.key, "cuda_low_memory")
-        self.assertFalse(marketed_eight_gib.warm_hymt2_on_startup)
+        self.assertEqual(marketed_eight_gib.hymt2_backend, "transformers")
+        self.assertTrue(marketed_eight_gib.warm_hymt2_on_startup)
 
     def test_device_preference_and_vram_select_the_expected_backend(self):
         forced_cpu = self._profile(cuda=True, vram_gib=8, preference="cpu")
@@ -236,6 +237,39 @@ class CpuRuntimeTests(unittest.TestCase):
         self.assertEqual(result, ["Xin chao"])
         self.assertEqual(model.requests[0]["messages"][0]["content"], "Translate this")
         self.assertLessEqual(model.requests[0]["max_tokens"], 384)
+
+    def test_hymt2_torch_threading_is_configured_only_once(self):
+        fake_torch = SimpleNamespace(
+            set_num_threads=mock.Mock(),
+            set_num_interop_threads=mock.Mock(),
+        )
+        original_configured = hymt2_worker._TORCH_THREADING_CONFIGURED
+        hymt2_worker._TORCH_THREADING_CONFIGURED = False
+        try:
+            hymt2_worker._configure_torch_threading(fake_torch)
+            hymt2_worker._configure_torch_threading(fake_torch)
+        finally:
+            hymt2_worker._TORCH_THREADING_CONFIGURED = original_configured
+
+        fake_torch.set_num_threads.assert_called_once_with(1)
+        fake_torch.set_num_interop_threads.assert_called_once_with(1)
+
+    def test_hymt2_keeps_existing_interop_pool_when_torch_already_started(self):
+        fake_torch = SimpleNamespace(
+            set_num_threads=mock.Mock(),
+            set_num_interop_threads=mock.Mock(
+                side_effect=RuntimeError(
+                    "Error: cannot set number of interop threads after parallel work has started"
+                )
+            ),
+        )
+        original_configured = hymt2_worker._TORCH_THREADING_CONFIGURED
+        hymt2_worker._TORCH_THREADING_CONFIGURED = False
+        try:
+            hymt2_worker._configure_torch_threading(fake_torch)
+            self.assertTrue(hymt2_worker._TORCH_THREADING_CONFIGURED)
+        finally:
+            hymt2_worker._TORCH_THREADING_CONFIGURED = original_configured
 
     def test_encoder_selection_probes_hardware_then_falls_back(self):
         cuda_profile = SimpleNamespace(cuda_available=True)

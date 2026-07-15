@@ -43,6 +43,10 @@ ApplicationWindow {
         id: projectSetupDialog
     }
 
+    UrlImportDialog {
+        id: urlImportDialog
+    }
+
     SettingsDialog {
         id: settingsDialog
     }
@@ -285,6 +289,7 @@ ApplicationWindow {
                     Layout.bottomMargin: 20
                     onRequestReviewTranslation: translationReviewDialog.open()
                     onRequestBack: root.pageIndex = root.workspaceReturnPage
+                    onRequestUrlImport: urlImportDialog.openForMode("single")
                 }
 
                 BatchPage {
@@ -296,6 +301,7 @@ ApplicationWindow {
                     Layout.bottomMargin: 24
                     onRequestBack: root.pageIndex = 0
                     onRequestBatchSettings: batchSettingsDialog.open()
+                    onRequestUrlImport: urlImportDialog.openForMode("batch")
                     onOpenJobDetail: {
                         root.workspaceReturnPage = 2
                         root.pageIndex = 1

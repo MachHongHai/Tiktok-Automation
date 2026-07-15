@@ -3,9 +3,10 @@ import gc
 import json
 import os
 import sys
+import traceback
 from pathlib import Path
 
-from autodub.core.hardware import runtime_profile
+from autodub.core.hardware import processing_device_preference, runtime_profile
 
 
 _INFERENCE_BATCH_SIZE = max(1, min(8, int(os.getenv("HYMT2_INFERENCE_BATCH_SIZE", "4"))))
@@ -15,6 +16,34 @@ _GLOBAL_CONTEXT_SEGMENTS = 3
 _MAX_BACKGROUND_CHARACTERS = 2400
 _PROGRESS_PATH = None
 _MODEL_RUNTIME = None
+_TORCH_THREADING_CONFIGURED = False
+_FIRST_GENERATION_PENDING = True
+
+
+def _configure_torch_threading(torch) -> None:
+    """Configure process-wide Torch pools once, before CUDA probing starts work."""
+    global _TORCH_THREADING_CONFIGURED
+    if _TORCH_THREADING_CONFIGURED:
+        return
+    torch.set_num_threads(1)
+    try:
+        torch.set_num_interop_threads(1)
+    except RuntimeError as exc:
+        # PyTorch permits this setting only once and only before parallel work.
+        # A reused interpreter or a native dependency may already have frozen
+        # the pool; keeping its existing value is safe for inference.
+        if "cannot set number of interop threads" not in str(exc).lower():
+            raise
+    _TORCH_THREADING_CONFIGURED = True
+
+
+def _prepare_torch_runtime():
+    os.environ.setdefault("OMP_NUM_THREADS", "1")
+    os.environ.setdefault("MKL_NUM_THREADS", "1")
+    import torch
+
+    _configure_torch_threading(torch)
+    return torch
 
 
 def _emit_event(payload: dict) -> None:
@@ -29,10 +58,72 @@ def _emit_event(payload: dict) -> None:
         print(line, flush=True)
 
 
+def _gib(value: int | float) -> float:
+    return round(float(value) / (1024 ** 3), 2) if value else 0.0
+
+
+def _emit_diagnostic(stage: str, torch=None, **details) -> None:
+    """Emit a crash-surviving memory snapshot through the worker event stream."""
+    snapshot = {
+        "stage": stage,
+        "pid": os.getpid(),
+        "processing_device": processing_device_preference(),
+        "python": sys.version.split()[0],
+    }
+    try:
+        import psutil
+
+        memory = psutil.virtual_memory()
+        swap = psutil.swap_memory()
+        process = psutil.Process()
+        snapshot.update(
+            {
+                "ram_available_gib": _gib(memory.available),
+                "ram_total_gib": _gib(memory.total),
+                "commit_or_swap_free_gib": _gib(swap.free),
+                "commit_or_swap_total_gib": _gib(swap.total),
+                "process_rss_gib": _gib(process.memory_info().rss),
+            }
+        )
+    except Exception as exc:
+        snapshot["system_memory_probe_error"] = f"{type(exc).__name__}: {exc}"
+
+    if torch is not None:
+        snapshot.update(
+            {
+                "torch": str(getattr(torch, "__version__", "unknown")),
+                "torch_cuda": str(getattr(getattr(torch, "version", None), "cuda", "unknown")),
+                "cuda_available": bool(torch.cuda.is_available()),
+            }
+        )
+        if torch.cuda.is_available():
+            try:
+                free_vram, total_vram = torch.cuda.mem_get_info(0)
+                snapshot.update(
+                    {
+                        "cuda_device": torch.cuda.get_device_name(0),
+                        "vram_free_gib": _gib(free_vram),
+                        "vram_total_gib": _gib(total_vram),
+                        "vram_allocated_gib": _gib(torch.cuda.memory_allocated(0)),
+                        "vram_reserved_gib": _gib(torch.cuda.memory_reserved(0)),
+                    }
+                )
+            except Exception as exc:
+                snapshot["cuda_memory_probe_error"] = f"{type(exc).__name__}: {exc}"
+    snapshot.update(details)
+    _emit_event({"event": "diagnostic", "detail": snapshot})
+
+
 def _inference_batches(texts: list[str], batch_size: int | None = None):
     """Yield prompt batches; each prompt still produces exactly one subtitle."""
     if batch_size is None:
-        batch_size = 1 if runtime_profile().is_cpu_only else _INFERENCE_BATCH_SIZE
+        profile = runtime_profile()
+        if profile.is_cpu_only:
+            batch_size = 1
+        elif getattr(profile, "key", "") == "cuda_low_memory":
+            batch_size = min(2, _INFERENCE_BATCH_SIZE)
+        else:
+            batch_size = _INFERENCE_BATCH_SIZE
     for start in range(0, len(texts), batch_size):
         yield start, min(len(texts), start + batch_size)
 
@@ -180,6 +271,7 @@ def _translate_prompt_batch(
     prompts: list[str],
     source_texts: list[str],
 ) -> list[str]:
+    global _FIRST_GENERATION_PENDING
     if device == "cpu-gguf":
         results = []
         for prompt, source_text in zip(prompts, source_texts):
@@ -210,6 +302,15 @@ def _translate_prompt_batch(
         for text in source_texts
     )
     output_budget = min(384, max(48, longest_source_tokens * 4 + 16))
+    first_generation = _FIRST_GENERATION_PENDING
+    if first_generation:
+        _emit_diagnostic(
+            "first_generation_start",
+            torch,
+            prompt_count=len(prompts),
+            input_tokens=input_length,
+            output_token_budget=min(output_budget, available_output),
+        )
     with torch.inference_mode():
         generated = model.generate(
             **encoded,
@@ -221,6 +322,9 @@ def _translate_prompt_batch(
             max_new_tokens=min(output_budget, available_output),
             pad_token_id=tokenizer.pad_token_id,
         )
+    if first_generation:
+        _FIRST_GENERATION_PENDING = False
+        _emit_diagnostic("first_generation_complete", torch, prompt_count=len(prompts))
     if len(generated) != len(prompts):
         raise RuntimeError("HY-MT2 inference did not return one result per subtitle prompt.")
     return [
@@ -265,7 +369,18 @@ def _cpu_model_path() -> str:
 
 
 def _load_model(model_name: str):
+    # Configure Torch before runtime_profile() probes CUDA. CUDA telemetry can
+    # initialize Torch's parallel runtime, after which interop threads are
+    # immutable for the lifetime of this worker process.
+    torch_runtime = _prepare_torch_runtime() if processing_device_preference() == "gpu" else None
     profile = runtime_profile()
+    _emit_diagnostic(
+        "runtime_profile_selected",
+        torch_runtime,
+        profile=profile.key,
+        backend=profile.hymt2_backend,
+        model=model_name,
+    )
     if profile.hymt2_backend == "llama_cpp":
         from llama_cpp import Llama
 
@@ -273,7 +388,11 @@ def _load_model(model_name: str):
         _emit_event(
             {
                 "event": "status",
-                "detail": f"Loading HY-MT2 Q4 CPU model with {profile.cpu_threads} threads",
+                "detail": (
+                    f"Loading HY-MT2 Q4 memory-safe model with {profile.cpu_threads} threads"
+                    if profile.cuda_available
+                    else f"Loading HY-MT2 Q4 CPU model with {profile.cpu_threads} threads"
+                ),
             }
         )
         model = Llama(
@@ -285,36 +404,86 @@ def _load_model(model_name: str):
             n_gpu_layers=0,
             verbose=False,
         )
-        _emit_event({"event": "status", "detail": "HY-MT2 Q4 CPU model is ready"})
+        _emit_event(
+            {
+                "event": "status",
+                "detail": (
+                    "HY-MT2 Q4 memory-safe model is ready; GPU remains available for speech and rendering"
+                    if profile.cuda_available
+                    else "HY-MT2 Q4 CPU model is ready"
+                ),
+            }
+        )
         return model, None, None, "cpu-gguf"
 
-    # Torch's CPU loader is more stable on Windows when model deserialization
-    # does not fan out across every logical processor.
-    os.environ.setdefault("OMP_NUM_THREADS", "1")
-    os.environ.setdefault("MKL_NUM_THREADS", "1")
-    import torch
+    # Torch's loader is more stable on Windows when model deserialization does
+    # not fan out across every logical processor.
+    torch = torch_runtime or _prepare_torch_runtime()
     from transformers import AutoModelForCausalLM, AutoTokenizer
-
-    torch.set_num_threads(1)
-    torch.set_num_interop_threads(1)
     device = "cuda" if torch.cuda.is_available() else "cpu"
     dtype = torch.bfloat16 if device == "cuda" else torch.float32
+    _emit_diagnostic("tokenizer_load_start", torch, model=model_name, dtype=str(dtype), device=device)
     _emit_event({"event": "status", "detail": "Loading HY-MT2 tokenizer"})
     tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
+    _emit_diagnostic("tokenizer_load_complete", torch, model=model_name, device=device)
+    staged_cuda_load = device == "cuda" and profile.key == "cuda_low_memory"
     load_options = {
         "dtype": dtype,
         "trust_remote_code": True,
+        "use_safetensors": True,
     }
-    _emit_event({"event": "status", "detail": "Loading HY-MT2 weights"})
+    if staged_cuda_load:
+        # Loading a single large safetensors shard directly into CUDA through
+        # Transformers' meta-model path can trigger a native storage access
+        # violation on Windows. Stage the same BF16 checkpoint in system
+        # memory, then transfer the complete model to CUDA.
+        load_options["low_cpu_mem_usage"] = False
+        load_strategy = "staged_cpu_to_cuda"
+    else:
+        load_options["device_map"] = {"": device}
+        load_options["low_cpu_mem_usage"] = True
+        load_strategy = "direct_to_device"
+    _emit_diagnostic(
+        "weights_load_start",
+        torch,
+        model=model_name,
+        dtype=str(dtype),
+        device=device,
+        load_strategy=load_strategy,
+    )
+    _emit_event(
+        {
+            "event": "status",
+            "detail": (
+                "Loading full HY-MT2 BF16 weights in staged GPU mode"
+                if staged_cuda_load
+                else "Loading HY-MT2 weights"
+            ),
+        }
+    )
     model = AutoModelForCausalLM.from_pretrained(model_name, **load_options)
-    _emit_event({"event": "status", "detail": f"HY-MT2 weights loaded; moving model to {device}"})
+    _emit_diagnostic(
+        "weights_load_complete",
+        torch,
+        model=model_name,
+        dtype=str(dtype),
+        device="cpu" if staged_cuda_load else device,
+        load_strategy=load_strategy,
+    )
+    if staged_cuda_load:
+        _emit_event({"event": "status", "detail": "Transferring full HY-MT2 BF16 model to CUDA"})
+        _emit_diagnostic("cuda_transfer_start", torch, model=model_name, dtype=str(dtype))
+        model.to(device)
+        _emit_diagnostic("cuda_transfer_complete", torch, model=model_name, dtype=str(dtype))
+    else:
+        _emit_event({"event": "status", "detail": f"HY-MT2 weights loaded directly on {device}"})
     # Match Tencent's recommended inference parameters for the 1.8B checkpoint.
     model.generation_config.do_sample = True
     model.generation_config.temperature = 0.7
     model.generation_config.top_p = 0.6
     model.generation_config.top_k = 20
-    model.to(device)
     model.eval()
+    _emit_diagnostic("model_ready", torch, model=model_name, dtype=str(dtype), device=device)
     _emit_event({"event": "status", "detail": "HY-MT2 model is ready"})
     return model, tokenizer, torch, device
 
@@ -420,6 +589,11 @@ def _serve() -> int:
                     continue
                 result = {"translations": translate(request["payload"])}
             except Exception as exc:
+                _emit_diagnostic(
+                    "python_exception",
+                    details=f"{type(exc).__name__}: {exc}",
+                    traceback=traceback.format_exc(),
+                )
                 result = {"error": f"HY-MT2 worker failed: {type(exc).__name__}: {exc}"}
             result.update({"event": "response", "request_id": request_id})
             _emit_event(result)
@@ -430,6 +604,12 @@ def _serve() -> int:
 
 def main(argv=None) -> int:
     global _PROGRESS_PATH
+    try:
+        import faulthandler
+
+        faulthandler.enable(all_threads=True)
+    except (OSError, RuntimeError):
+        pass
     parser = argparse.ArgumentParser()
     parser.add_argument("--request")
     parser.add_argument("--response")

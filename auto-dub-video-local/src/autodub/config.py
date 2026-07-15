@@ -28,7 +28,10 @@ WHISPER_MODEL = os.getenv("WHISPER_MODEL", "small")
 HYMT2_MODEL = os.getenv("HYMT2_MODEL", "tencent/Hy-MT2-1.8B")
 HYMT2_CPU_MODEL_REPO = os.getenv("HYMT2_CPU_MODEL_REPO", "tencent/Hy-MT2-1.8B-GGUF")
 HYMT2_CPU_MODEL_FILE = os.getenv("HYMT2_CPU_MODEL_FILE", "Hy-MT2-1.8B-Q4_K_M.gguf")
-TTS_MAX_CONCURRENCY = max(1, min(4, int(os.getenv("TTS_MAX_CONCURRENCY", "3"))))
+# Edge's consumer speech endpoint is substantially more reliable with one
+# WebSocket at a time. Advanced users can still override this, but production
+# defaults preserve the sequential behavior of the stable pipeline.
+TTS_MAX_CONCURRENCY = max(1, min(4, int(os.getenv("TTS_MAX_CONCURRENCY", "1"))))
 
 
 def _resolve_runtime_path(value: str | None, default: str) -> str:

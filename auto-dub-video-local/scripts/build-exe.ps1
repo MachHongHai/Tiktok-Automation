@@ -43,8 +43,7 @@ $ExcludedModules = @(
   "tensorboard",
   "tensorflow",
   "torch.utils.tensorboard",
-  "tornado",
-  "yt_dlp"
+  "tornado"
 )
 
 foreach ($Module in $ExcludedModules) {
@@ -62,6 +61,8 @@ if (Test-Path $QmlPath) {
 }
 
 $ArgsList += @("--collect-all", "llama_cpp")
+$ArgsList += @("--collect-all", "accelerate")
+$ArgsList += @("--collect-all", "yt_dlp")
 
 if ($IncludeCpuModel) {
   $SourcePath = Join-Path $Root "src"

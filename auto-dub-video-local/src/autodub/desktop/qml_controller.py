@@ -16,6 +16,7 @@ from autodub.desktop.media import (
     normalize_video_path,
     open_path,
     resolve_job_file,
+    thumbnail_source,
 )
 from autodub.desktop.models import JobListModel, ProjectListModel, TaskListModel
 from autodub.desktop.presenters import (
@@ -25,6 +26,7 @@ from autodub.desktop.presenters import (
     language_label,
     voice_options_for_language,
 )
+from autodub.desktop.url_import import VideoUrlImportCoordinator
 
 from autodub.config import RUNTIME_DATA_DIR
 from autodub.core.events import subscribe_log, unsubscribe_log
@@ -39,11 +41,10 @@ from autodub.core.hardware import (
 )
 from autodub.pipeline.job_manager import cancel_job, pause_job
 from autodub.schemas.job import CropSettings, JobConfig, SubtitleStyle
-from autodub.services import job_store, project_store
+from autodub.services import desktop_settings, job_store, project_store
 from autodub.services.desktop_jobs import create_desktop_job, migrate_legacy_single_export
 from autodub.services.processing_queue import SerialProcessingQueue
 from autodub.services.translation import shutdown_hymt2_worker, warm_hymt2_worker
-from autodub.services import desktop_settings
 from autodub.utils.ffmpeg import get_video_dimensions
 
 
@@ -69,6 +70,7 @@ class AutoDubController(QObject):
     languageOptionsChanged = Signal()
     projectSetupChanged = Signal()
     projectPrepared = Signal()
+    urlImportFinished = Signal()
 
     def __init__(self):
         super().__init__()
@@ -151,6 +153,9 @@ class AutoDubController(QObject):
         self._project_type = "single"
         self._log_queue = queue.Queue()
         self._thumbnail_refresh_running = False
+        self._url_importer = VideoUrlImportCoordinator(self)
+        self._url_importer.downloadReady.connect(self._handle_url_download_ready)
+        self._url_importer.importFinished.connect(self.urlImportFinished.emit)
 
         migrated_video_data = job_store.migrate_legacy_project_data()
         if migrated_video_data:
@@ -177,6 +182,7 @@ class AutoDubController(QObject):
     def shutdown(self):
         from autodub.pipeline.transcribe import release_warm_whisperx_model
 
+        self._url_importer.shutdown()
         unsubscribe_log(self._on_job_log)
         shutdown_hymt2_worker()
         release_warm_whisperx_model()
@@ -409,16 +415,21 @@ class AutoDubController(QObject):
 
     @videoPath.setter
     def videoPath(self, value):
-        if self._video_path != value:
-            self._video_path = value
-            thumbnail_path = (
-                self._job_thumbnail_path(self._selected_job_id)
-                if self._selected_job_id
-                else self._draft_thumbnail_path()
-            )
-            self._video_thumbnail_source = self._create_video_thumbnail(value, thumbnail_path)
-            self.videoPathChanged.emit()
-            self.videoThumbnailChanged.emit()
+        self._set_video_path(value)
+
+    def _set_video_path(self, value: str, *, refresh_thumbnail: bool = False) -> None:
+        path_changed = self._video_path != value
+        if not path_changed and not refresh_thumbnail:
+            return
+        self._video_path = value
+        thumbnail_path = (
+            self._job_thumbnail_path(self._selected_job_id)
+            if self._selected_job_id
+            else self._draft_thumbnail_path()
+        )
+        self._video_thumbnail_source = self._create_video_thumbnail(value, thumbnail_path)
+        self.videoPathChanged.emit()
+        self.videoThumbnailChanged.emit()
 
     @Property(str, notify=videoThumbnailChanged)
     def videoThumbnailSource(self):
@@ -684,6 +695,10 @@ class AutoDubController(QObject):
     def statusMessage(self):
         return self._status_message
 
+    @Property(QObject, constant=True)
+    def urlImporter(self):
+        return self._url_importer
+
     @Property(str, notify=previewChanged)
     def previewSource(self):
         return self._preview_source
@@ -829,6 +844,34 @@ class AutoDubController(QObject):
         return "Apply to this size" if self._preview_edit_scope == "size_group" else "Save subtitle frame"
 
     @Slot()
+    def downloadInspectedVideo(self):
+        if not self.hasOpenProject:
+            self._url_importer.complete_import(False, "Open or create a project before downloading a video.")
+            return
+        if self._project_type == "single" and self.isSelectedJobProcessing:
+            self._url_importer.complete_import(
+                False,
+                "Pause or finish the current video before replacing it.",
+            )
+            return
+        project_root = project_store.project_root(self._project_name, self._project_directory)
+        self._url_importer.start_download(project_root)
+
+    def _handle_url_download_ready(self, path, _workspace, mode):
+        imported = False
+        if mode == "batch":
+            previous_count = self.batchCount
+            self.importBatchVideos([path])
+            imported = self.batchCount > previous_count
+        elif self._selected_job_id:
+            imported = self.replaceSelectedJobVideo(path)
+        else:
+            imported = self.importVideo(path)
+
+        message = "" if imported else "The video was downloaded but could not be added to the project."
+        self._url_importer.complete_import(imported, message)
+
+    @Slot()
     def browseVideo(self):
         path, _ = QFileDialog.getOpenFileName(None, "Choose input video", "", "Video files (*.mp4 *.mov *.mkv);;All files (*.*)")
         if path:
@@ -837,27 +880,27 @@ class AutoDubController(QObject):
             else:
                 self.importVideo(path)
 
-    @Slot(str)
+    @Slot(str, result=bool)
     def replaceSelectedJobVideo(self, path):
         job = job_store.get_job(self._selected_job_id) if self._selected_job_id else None
         normalized_path = self._normalize_video_path(path)
         if not job:
-            return
+            return False
         if job.status == "processing":
             QMessageBox.information(None, "Replace video", "Pause or finish this video before replacing it.")
-            return
+            return False
         if not os.path.isfile(normalized_path) or os.path.splitext(normalized_path)[1].lower() not in {".mp4", ".mov", ".mkv"}:
             QMessageBox.warning(None, "Invalid video", "Choose an MP4, MOV, or MKV video file.")
-            return
+            return False
         if self._processing_queue.discard(job.job_id):
             self._update_queue_positions()
         try:
             job = job_store.replace_job_input(job.job_id, normalized_path)
         except (OSError, RuntimeError) as exc:
             QMessageBox.warning(None, "Replace video", str(exc))
-            return
+            return False
         if not job:
-            return
+            return False
         destination = job.files["video_input"]
         try:
             job.video_width, job.video_height = get_video_dimensions(destination)
@@ -867,7 +910,9 @@ class AutoDubController(QObject):
         if thumbnail_path:
             job.files["thumbnail"] = thumbnail_path
         job_store.save_job(job)
-        self.videoPath = destination
+        # The managed input path remains stable (input/video.ext) after a
+        # replacement, so explicitly refresh the image source as well.
+        self._set_video_path(destination, refresh_thumbnail=True)
         job_store.log_to_job(job.job_id, f"Input video replaced with: {job.original_filename}")
         self._logs = self._read_job_logs(job.job_id)
         self.videoThumbnailChanged.emit()
@@ -875,6 +920,7 @@ class AutoDubController(QObject):
         self.logsChanged.emit()
         self.refreshJobs()
         self._log_queue.put("__QUEUE_CHANGED__")
+        return True
 
     @Slot()
     def browseProjectDirectory(self):
@@ -988,15 +1034,15 @@ class AutoDubController(QObject):
         if device_changed and not (pipeline_active or self._device_switching):
             self._switch_processing_device(self._settings_processing_device)
 
-    @Slot(str)
+    @Slot(str, result=bool)
     def importVideo(self, path):
         normalized_path = self._normalize_video_path(path)
         if not os.path.isfile(normalized_path):
             QMessageBox.warning(None, "Invalid video", "The dropped file is unavailable.")
-            return
+            return False
         if os.path.splitext(normalized_path)[1].lower() not in {".mp4", ".mov", ".mkv"}:
             QMessageBox.warning(None, "Unsupported file", "Choose an MP4, MOV, or MKV video file.")
-            return
+            return False
         if self.hasOpenProject:
             try:
                 job = create_desktop_job(
@@ -1007,16 +1053,17 @@ class AutoDubController(QObject):
                 )
             except Exception as exc:
                 QMessageBox.critical(None, "Cannot import video", str(exc))
-                return
+                return False
             self._assign_project_thumbnail(job)
             self._select_job(job)
             self.refreshJobs()
-            return
+            return True
 
         self._selected_job_id = None
         self.tasks.set_job(None)
         self.videoPath = normalized_path
         self.selectedJobChanged.emit()
+        return True
 
     @Slot()
     def browseBatchVideos(self):
@@ -1467,7 +1514,7 @@ class AutoDubController(QObject):
         input_path = self._resolve_job_file(job, ("video_input", "input_video"), ("input", "video.mp4"))
         thumbnail_path = job.files.get("thumbnail") or ""
         self._video_path = input_path
-        self._video_thumbnail_source = QUrl.fromLocalFile(thumbnail_path).toString() if os.path.exists(thumbnail_path) else ""
+        self._video_thumbnail_source = thumbnail_source(thumbnail_path)
         self._load_job_preview(job)
         self._logs = self._read_job_logs(job.job_id)
         self.tasks.set_job(job)
@@ -2081,7 +2128,7 @@ class AutoDubController(QObject):
             if selected_job and thumbnail_path:
                 selected_job.files["thumbnail"] = thumbnail_path
                 job_store.save_job(selected_job)
-        poster_source = QUrl.fromLocalFile(thumbnail_path).toString() if os.path.exists(thumbnail_path) else ""
+        poster_source = thumbnail_source(thumbnail_path)
         self._preview_poster_source = poster_source or self._video_thumbnail_source
         self._preview_aspect_ratio = 16 / 9
         try:
@@ -2120,7 +2167,7 @@ class AutoDubController(QObject):
     @staticmethod
     def _create_video_thumbnail(path: str, output_path: str = "") -> str:
         output_path = AutoDubController._create_video_thumbnail_path(path, output_path)
-        return QUrl.fromLocalFile(output_path).toString() if output_path else ""
+        return thumbnail_source(output_path)
 
     _create_video_thumbnail_path = staticmethod(create_video_thumbnail_path)
 

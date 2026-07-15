@@ -8,6 +8,7 @@ Item {
 
     signal requestReviewTranslation()
     signal requestBack()
+    signal requestUrlImport()
 
     readonly property bool wideLayout: width >= 1380
 
@@ -73,6 +74,7 @@ Item {
                     Layout.minimumWidth: 390
                     Layout.preferredWidth: root.wideLayout ? 440 : 480
                     Layout.preferredHeight: 536
+                    onRequestUrlImport: root.requestUrlImport()
                 }
 
                 DubbingSetupPanel {

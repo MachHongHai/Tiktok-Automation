@@ -384,9 +384,12 @@ def runtime_profile() -> RuntimeProfile:
             logical_cpu_count=logical_cpus,
             cpu_threads=max(1, min(8, logical_cpus - 1 if logical_cpus > 2 else logical_cpus)),
             whisper_batch_size=8 if low_vram else 16,
+            # A supported CUDA device always runs the official BF16 checkpoint.
+            # The low-memory profile controls batch sizes and model hand-off,
+            # not translation quality or model format.
             hymt2_backend="transformers",
             warm_whisper_on_startup=True,
-            warm_hymt2_on_startup=not low_vram,
+            warm_hymt2_on_startup=True,
             translation_idle_seconds=0,
         )
 

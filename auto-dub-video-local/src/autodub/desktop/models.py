@@ -1,8 +1,8 @@
 """Qt list models used by the QML presentation layer."""
 
-import os
+from PySide6.QtCore import QAbstractListModel, QModelIndex, Qt
 
-from PySide6.QtCore import QAbstractListModel, QModelIndex, Qt, QUrl
+from autodub.desktop.media import thumbnail_source
 
 class JobListModel(QAbstractListModel):
     JobIdRole = Qt.ItemDataRole.UserRole + 1
@@ -81,7 +81,7 @@ class JobListModel(QAbstractListModel):
     @staticmethod
     def _thumbnail_source(job):
         path = job.files.get("thumbnail") if job else ""
-        return QUrl.fromLocalFile(path).toString() if path and os.path.exists(path) else ""
+        return thumbnail_source(path)
 
     @staticmethod
     def _video_size(job):
@@ -221,4 +221,3 @@ class TaskListModel(QAbstractListModel):
                 state = "pending"
             tasks.append({"key": key, "name": name, "state": state, "detail": key.replace("_", " ")})
         return tasks
-

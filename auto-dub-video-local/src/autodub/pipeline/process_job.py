@@ -67,7 +67,15 @@ class GpuRuntimeUnavailable(RuntimeError):
 
 _GPU_FAILURE_MARKERS = (
     "cuda", "cudnn", "cublas", "nvidia", "gpu", "device-side", "driver",
-    "0xc0000005", "3221225477", "native torch crash",
+)
+
+_NON_RECOVERABLE_RUNTIME_MARKERS = (
+    "0xc0000005",
+    "3221225477",
+    "native torch crash",
+    "native windows crash",
+    "paging file is too small",
+    "os error 1455",
 )
 
 
@@ -88,6 +96,11 @@ def _is_gpu_runtime_failure(error: Exception) -> bool:
     if not runtime_profile().cuda_available:
         return False
     message = str(error).lower()
+    # Memory-commit failures and native access violations need investigation.
+    # Treating them as a lost GPU would hide the original defect behind a CPU
+    # retry and make the failing runtime impossible to diagnose.
+    if any(marker in message for marker in _NON_RECOVERABLE_RUNTIME_MARKERS):
+        return False
     return any(marker in message for marker in _GPU_FAILURE_MARKERS)
 
 
@@ -441,9 +454,8 @@ def _finish_after_translation(job, reporter, job_dir, original_audio_target):
         else:
             reporter.update(65, "creating_voice", "Starting voice synthesis")
             def report_voice_progress(current, total):
-                detail = f"Creating voice {current} of {total}"
+                detail = f"Verified voice audio {current} of {total}"
                 reporter.update(65 + round(17 * current / max(1, total)), "creating_voice", detail, current, total)
-                log_to_job(job_id, detail)
 
             generate_voice_parts(
                 transcript_json, voice_parts_dir, job.tts_voice, job_id,

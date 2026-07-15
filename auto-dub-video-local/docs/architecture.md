@@ -24,6 +24,7 @@ src/autodub/
     media.py                Video-path, thumbnail, and OS-open helpers
     models.py               QAbstractListModel implementations for QML
     presenters.py           Project summaries and localized display mapping
+    url_import.py           QML-facing background URL import state coordinator
     qml/                    Pages, dialogs, design tokens, and reusable controls
   pipeline/
     process_job.py          Stage orchestration and checkpoint validation
@@ -37,6 +38,7 @@ src/autodub/
   services/
     job_store.py            Persistent job metadata and per-job logs
     desktop_jobs.py         Project-aware job creation and media import
+    video_download.py       YouTube, TikTok, and Douyin URL inspection/download
     translation.py          HY-MT2 worker protocol
     hymt2_worker.py         Isolated local translation worker entry point
     desktop_settings.py     Theme and language persistence
@@ -79,7 +81,7 @@ Run `scripts/test.ps1` before merging. It compiles application, script, and test
 
 1. `autodub_desktop.py` relaunches itself with `.venv\Scripts\python.exe` when available. The source launcher exits after creating the project-runtime process; it does not import Qt or ML packages from the system Python installation.
 2. `autodub.desktop.main` creates the Qt application and registers `AutoDubController` with the QML engine.
-3. `AutoDubController` loads settings and project metadata, starts polling timers, then warms WhisperX followed by the persistent HY-MT2 worker on a background thread.
+3. `AutoDubController` loads settings and project metadata, starts polling timers, then warms the persistent HY-MT2 worker followed by WhisperX on a background thread.
 4. `Main.qml` presents Projects, Batch, Settings, and the shared processing workspace.
 5. Closing the application unsubscribes log events, shuts down the HY-MT2 worker, and releases both warmed models.
 
@@ -114,6 +116,12 @@ video input
   -> FFmpeg render
 ```
 
+Local files and downloaded links share the same import boundary. `services.video_download` validates an allowlist of
+YouTube, TikTok, and Douyin hosts, uses yt-dlp to inspect one non-live video, and downloads into a project-owned
+`.downloads` staging directory. `desktop.url_import` exposes metadata and progress to one shared QML dialog. Only after
+the download is complete does the controller create or replace the persisted video workspace; successful, failed, and
+cancelled downloads remove their staging directory. The processing queue therefore never observes a partial source file.
+
 ### WhisperX
 
 `pipeline.transcribe` owns a process-local ASR cache. Warm-up loads the configured WhisperX model in a background thread when the detected memory profile can safely retain it. Subsequent transcription calls reuse it when the device matches. CUDA uses FP16 and a larger batch; CPU uses INT8, a RAM-aware batch of one to four, and a bounded thread count. Low-memory CPU profiles release the warm ASR model before translation. WhisperX first produces sentence-level subtitle boundaries, then the same ASR model identifies the language of each sentence from only that sentence's audio. Detected language switches are transcribed again with the appropriate tokenizer and aligned with the matching language model, so a mixed-language video is not forced into the language detected at its beginning. Alignment models are short-lived and released after use because they are language-specific and can consume significant memory.
@@ -124,11 +132,11 @@ Audio is decoded by the bundled FFmpeg process and passed to WhisperX as an in-m
 
 HY-MT2 runs in a persistent separate process. In source mode the parent invokes the worker with the same project virtual-environment interpreter; in a frozen build it invokes the executable's internal `--hymt2-worker` entry point. The worker receives JSON-line requests over standard input and returns JSON-line status, item-progress, and response events. Each subtitle is translated independently while bounded preceding topic anchors are supplied as reference-only context. This keeps the one-input/one-output contract required by TTS, avoids subject leakage between adjacent subtitles, and prevents unbounded full-video prompts.
 
-The runtime selects one of two inference backends according to the persisted `auto`, `gpu`, or `cpu` preference. CUDA uses the official Transformers BF16 model and keeps the warm worker for the desktop session. CPU mode uses the official `Hy-MT2-1.8B-Q4_K_M.gguf` model through `llama-cpp-python`, one prompt at a time. CPU translation is loaded only when needed and is released after a RAM-profile-dependent idle period. An installer may embed the GGUF file under `models/hymt2-gguf`; otherwise it is downloaded once into the configured runtime data directory.
+The runtime selects one of two inference backends according to the persisted `gpu` or `cpu` preference. CUDA uses the official Transformers BF16 model and keeps the warm worker for the desktop session. On supported 7-8 GB Windows GPUs, the same BF16 checkpoint is staged in system memory before transfer to CUDA to avoid a native Transformers meta-tensor loading failure; only the inference batch size is reduced. CPU mode uses the official `Hy-MT2-1.8B-Q4_K_M.gguf` model through `llama-cpp-python`, one prompt at a time. CPU translation is loaded only when needed and is released after a RAM-profile-dependent idle period. An installer may embed the GGUF file under `models/hymt2-gguf`; otherwise it is downloaded once into the configured runtime data directory.
 
 ### Voice Synthesis
 
-`pipeline.tts` creates one MP3 per translated segment. An asyncio semaphore bounds concurrent Edge TTS requests using `TTS_MAX_CONCURRENCY`, defaulting to three. Completion callbacks update both persistent progress and the job log.
+`pipeline.tts` creates one MP3 per translated segment. Edge TTS requests run sequentially by default because its consumer WebSocket endpoint is less reliable under concurrent requests; `TTS_MAX_CONCURRENCY` remains an advanced override. Each response is written to a temporary file and promoted atomically only after MP3 validation. Segments that exhaust the primary retry budget are recovered with fresh connections and longer backoff. Persistent failures stop the pipeline before rendering instead of inserting silent audio. Completion callbacks update both persistent progress and the project log.
 
 ### Audio Source Modes
 
@@ -145,6 +153,7 @@ The two audio modes are mutually exclusive. Original mode mixes the source track
 ```text
 <project>/
   .autodub-project.json
+  .downloads/                      Temporary URL downloads; removed after import
   exports/                         Final rendered videos
   videos/<video-id>/
     job.json, logs.txt
@@ -157,17 +166,19 @@ The build uses PyInstaller `--onedir` because Qt, Torch, WhisperX, and FFmpeg re
 
 The unified dependency set is version-pinned in `pyproject.toml`. It contains a CUDA-capable Torch build for GPU systems and `llama-cpp-python` for CPU translation. CUDA Torch remains able to execute CPU inference on systems without an NVIDIA driver, so one virtual environment and one installer cover both paths. `requirements.txt` supplies the custom wheel indexes and installs the package. `scripts/verify-runtime.py` validates the active environment, package versions, Qt modules, Torch build, cache locations, bundled FFmpeg tools, and `pip check`. `scripts/build-exe.ps1` runs this verifier before PyInstaller. The optional `-IncludeCpuModel` switch embeds the prepared GGUF model so CPU translation does not need a first-run model download.
 
-`core.hardware` is the single policy source for CUDA visibility, VRAM/RAM requirements, the persisted device preference, thread limits, Whisper batch size, warm-up policy, translation lifetime, and CPU/GPU labels exposed in Settings. GPU selection requires CUDA and at least 6 GB VRAM; CPU selection requires approximately 6 GB system RAM. A 6-8 GB GPU uses a lower-memory profile that releases WhisperX before HY-MT2 translation. FFmpeg separately probes NVENC, Quick Sync, and AMF because hardware video encoding can remain available while AI inference is set to CPU. A failed hardware render is retried with `libx264` and the `veryfast` preset.
+`core.hardware` is the single policy source for CUDA visibility, VRAM/RAM requirements, the persisted device preference, thread limits, Whisper batch size, warm-up policy, translation lifetime, and CPU/GPU labels exposed in Settings. GPU selection requires CUDA and at least 7 GB VRAM; CPU selection requires approximately 6 GB system RAM. A 7-8 GB GPU uses a lower-memory profile that releases WhisperX before HY-MT2 translation while retaining the full BF16 translation model. FFmpeg separately probes NVENC, Quick Sync, and AMF because hardware video encoding can remain available while AI inference is set to CPU. A failed hardware render is retried with `libx264` and the `veryfast` preset.
 
 ## Observability
 
 `services.job_store.log_to_job` is the authoritative pipeline log path. It writes a timestamped line to the selected video's `<project>/videos/<video-id>/logs.txt` and emits an in-process event. The desktop controller subscribes to the event stream, appends live lines to the selected project's log, and polls persisted job metadata for state changes. The separate app log is diagnostic-only and never contains project media or pipeline state.
 
+Each HY-MT2 process also writes a bounded diagnostic log under `<runtime-data>/logs/hymt2-workers`. It records the model/backend, Python and Torch/CUDA versions, RAM/commit/VRAM snapshots at tokenizer load, weight load, CUDA transfer, model readiness, and first generation, plus Python tracebacks and Windows native exit codes. The parent retains the newest 25 worker logs and includes the exact file path in translation failures.
+
 ## Concurrency Policy
 
 - One foreground pipeline job is active at a time.
 - Batch jobs are queued and run sequentially.
-- CUDA warms WhisperX and HY-MT2 sequentially in the background to avoid competing GPU loads. CPU profiles warm only WhisperX when RAM permits.
+- CUDA warms HY-MT2 and WhisperX sequentially in the background to avoid competing model loads. CPU profiles warm only WhisperX when RAM permits.
 - HY-MT2 is isolated in one persistent worker; CPU profiles shut it down after an adaptive idle interval, while CUDA retains it for the desktop session.
 - Edge TTS is the only bounded fan-out stage, limited to one through four concurrent requests.
 

@@ -272,8 +272,13 @@ def replace_job_input(job_id: str, source_path: str) -> Optional[JobInfo]:
 
             if final_video and _is_inside(final_video, project_root) and os.path.isfile(final_video):
                 os.remove(final_video)
-            if previous_thumbnail and _is_inside(previous_thumbnail, job_dir) and os.path.isfile(previous_thumbnail):
-                os.remove(previous_thumbnail)
+            thumbnail_candidates = {
+                previous_thumbnail,
+                os.path.join(job_dir, "thumbnail.jpg"),
+            }
+            for thumbnail_path in thumbnail_candidates:
+                if thumbnail_path and _is_inside(thumbnail_path, job_dir) and os.path.isfile(thumbnail_path):
+                    os.remove(thumbnail_path)
 
             shutil.copy2(staged_source, input_path)
         finally:

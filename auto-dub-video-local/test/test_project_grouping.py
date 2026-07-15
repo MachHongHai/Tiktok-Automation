@@ -327,7 +327,7 @@ class ProjectGroupingTests(unittest.TestCase):
                 job.files["final_video"] = str(old_export)
                 job.files["thumbnail"] = str(old_thumbnail)
                 job.checkpoints = {"translation": "old-checkpoint"}
-                job.status = "done"
+                job.status = "paused"
                 job.progress = 100
                 job.review_approved = True
                 job_store.save_job(job)
@@ -366,6 +366,32 @@ class ProjectGroupingTests(unittest.TestCase):
         self.assertFalse(backup_exists)
         self.assertIn("Previous processing data was removed", logs)
         self.assertNotIn("old log", logs)
+
+    def test_replacing_a_video_removes_an_untracked_legacy_thumbnail(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            original_jobs_dir = job_store.JOBS_DIR
+            original_project_index = project_store.PROJECT_INDEX_PATH
+            job_store.JOBS_DIR = str(root / "legacy-jobs")
+            project_store.PROJECT_INDEX_PATH = str(root / "runtime" / "projects.json")
+            try:
+                project_store.ensure_project("Replace thumbnail", str(root / "projects"), "single")
+                config = JobConfig(project_name="Replace thumbnail", project_directory=str(root / "projects"))
+                job = job_store.create_job("replace-thumbnail", "old.mp4", config)
+                Path(job.files["video_input"]).write_bytes(b"old-video")
+                legacy_thumbnail = Path(job_store.get_job_dir(job.job_id)) / "thumbnail.jpg"
+                legacy_thumbnail.write_bytes(b"old-thumbnail")
+                replacement = root / "new.mp4"
+                replacement.write_bytes(b"new-video")
+
+                updated = job_store.replace_job_input(job.job_id, str(replacement))
+                legacy_thumbnail_exists = legacy_thumbnail.exists()
+            finally:
+                job_store.JOBS_DIR = original_jobs_dir
+                project_store.PROJECT_INDEX_PATH = original_project_index
+
+        self.assertIsNotNone(updated)
+        self.assertFalse(legacy_thumbnail_exists)
 
     def test_restart_discards_artifacts_and_checkpoints_but_keeps_source_video(self):
         with tempfile.TemporaryDirectory() as temp_dir:

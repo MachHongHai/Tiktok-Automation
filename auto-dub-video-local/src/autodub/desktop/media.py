@@ -104,6 +104,19 @@ def create_video_thumbnail_path(path: str, output_path: str = "") -> str:
         return ""
 
 
+def thumbnail_source(path: str) -> str:
+    """Return a local thumbnail URL that changes when its file is replaced."""
+    if not path or not os.path.isfile(path):
+        return ""
+    try:
+        stat = os.stat(path)
+    except OSError:
+        return ""
+    url = QUrl.fromLocalFile(os.path.abspath(path))
+    url.setQuery(f"v={stat.st_mtime_ns}-{stat.st_size}")
+    return url.toString()
+
+
 def open_path(path) -> None:
     if not path:
         return
@@ -111,4 +124,3 @@ def open_path(path) -> None:
         os.startfile(path)
     else:
         subprocess.Popen(["xdg-open", str(path)])
-

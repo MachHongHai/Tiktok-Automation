@@ -6,6 +6,8 @@ import sys
 import threading
 import time
 import uuid
+from datetime import datetime, timezone
+from pathlib import Path
 
 from autodub.core.paths import is_frozen, project_root
 from autodub.core.hardware import runtime_profile
@@ -43,6 +45,7 @@ _WORKER_OUTPUT = None
 _WORKER_READER = None
 _WORKER_WARM = False
 _WORKER_IDLE_TIMER = None
+_WORKER_DIAGNOSTIC_PATH = None
 
 
 def language_name(language_code: str) -> str:
@@ -109,13 +112,102 @@ def _worker_command() -> list[str]:
 
 
 def _discard_hymt2_worker(process=None) -> None:
-    global _WORKER_PROCESS, _WORKER_OUTPUT, _WORKER_READER, _WORKER_WARM
+    global _WORKER_PROCESS, _WORKER_OUTPUT, _WORKER_READER, _WORKER_WARM, _WORKER_DIAGNOSTIC_PATH
     if process is not None and process is not _WORKER_PROCESS:
         return
     _WORKER_PROCESS = None
     _WORKER_OUTPUT = None
     _WORKER_READER = None
     _WORKER_WARM = False
+    _WORKER_DIAGNOSTIC_PATH = None
+
+
+def _worker_diagnostic_path(process=None) -> str:
+    if process is not None and process is not _WORKER_PROCESS:
+        return ""
+    return str(_WORKER_DIAGNOSTIC_PATH or "")
+
+
+def _prune_worker_diagnostics(directory: Path, keep: int = 25) -> None:
+    """Retain recent crash evidence without allowing worker logs to grow forever."""
+    try:
+        diagnostics = sorted(
+            directory.glob("hymt2-worker-*.log"),
+            key=lambda path: path.stat().st_mtime_ns,
+            reverse=True,
+        )
+    except OSError:
+        return
+    for stale_path in diagnostics[keep:]:
+        try:
+            stale_path.unlink()
+        except OSError:
+            pass
+
+
+def _last_worker_stage(worker_output: list[str]) -> str:
+    for line in reversed(worker_output):
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if event.get("event") == "diagnostic" and isinstance(event.get("detail"), dict):
+            stage = event["detail"].get("stage")
+            if stage:
+                return str(stage)
+        if event.get("event") == "status" and event.get("detail"):
+            return str(event["detail"])
+    return "worker startup"
+
+
+def _format_worker_exit(
+    return_code: int | None,
+    phase: str,
+    worker_output: list[str],
+    diagnostic_path: str,
+) -> str:
+    code = int(return_code or 0)
+    unsigned_code = code & 0xFFFFFFFF
+    hex_code = f"0x{unsigned_code:08X}"
+    classifications = {
+        0xC0000005: "Windows access violation in native code (Torch, CUDA, driver, or a native dependency)",
+        0xC0000017: "Windows could not reserve enough virtual memory",
+        0xC000009A: "Windows reported insufficient system resources",
+        0xC000012D: "Windows commit limit was reached",
+        0xC0000409: "Windows terminated the process after a native stack or security check failure",
+    }
+    classification = classifications.get(unsigned_code, "unexpected worker process termination")
+    last_stage = _last_worker_stage(worker_output)
+    non_json_tail = [line.strip() for line in worker_output[-30:] if line.strip() and not line.lstrip().startswith("{")]
+    tail = " | ".join(non_json_tail)[-1500:] or "no native stderr was emitted"
+    return (
+        f"HY-MT2 worker stopped unexpectedly during {phase}. Exit code: {code} ({hex_code}); "
+        f"classification: {classification}; last stage: {last_stage}. "
+        f"Diagnostic log: {diagnostic_path or 'unavailable'}. Native output: {tail}"
+    )
+
+
+def _terminate_hymt2_worker(process) -> None:
+    """Stop a failed worker so partial native model allocations are released."""
+    if process is not None and process.poll() is None:
+        try:
+            process.kill()
+            process.wait(timeout=5)
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+    _discard_hymt2_worker(process)
+
+
+def _collect_remaining_worker_output(process, output_queue, worker_output: list[str]) -> None:
+    """Wait briefly for the reader to persist native stderr after worker exit."""
+    reader = _WORKER_READER if process is _WORKER_PROCESS else None
+    if reader is not None and reader.is_alive():
+        reader.join(timeout=2)
+    while True:
+        try:
+            worker_output.append(output_queue.get_nowait())
+        except queue.Empty:
+            return
 
 
 def _cancel_worker_idle_timer() -> None:
@@ -150,7 +242,7 @@ def is_hymt2_worker_warm() -> bool:
 
 
 def _ensure_hymt2_worker():
-    global _WORKER_PROCESS, _WORKER_OUTPUT, _WORKER_READER, _WORKER_WARM
+    global _WORKER_PROCESS, _WORKER_OUTPUT, _WORKER_READER, _WORKER_WARM, _WORKER_DIAGNOSTIC_PATH
     _cancel_worker_idle_timer()
     if _WORKER_PROCESS is not None and _WORKER_PROCESS.poll() is None and _WORKER_OUTPUT is not None:
         return _WORKER_PROCESS, _WORKER_OUTPUT
@@ -182,18 +274,67 @@ def _ensure_hymt2_worker():
         bufsize=1,
         startupinfo=startupinfo,
     )
+    from autodub.config import HYMT2_MODEL, LOGS_DIR
+
+    diagnostic_directory = Path(LOGS_DIR) / "hymt2-workers"
+    diagnostic_directory.mkdir(parents=True, exist_ok=True)
+    _prune_worker_diagnostics(diagnostic_directory)
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ")
+    diagnostic_path = diagnostic_directory / f"hymt2-worker-{timestamp}-{process.pid}.log"
+    profile = runtime_profile()
+    diagnostic_path.write_text(
+        json.dumps(
+            {
+                "event": "worker_started",
+                "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+                "launcher_pid": process.pid,
+                "command": _worker_command(),
+                "python": sys.version,
+                "model": HYMT2_MODEL,
+                "profile": profile.key,
+                "backend": profile.hymt2_backend,
+                "requested_device": profile.requested_device,
+                "cuda_name": profile.cuda_name,
+                "vram_gib": profile.total_vram_gib,
+                "ram_gib": profile.total_ram_gib,
+            },
+            ensure_ascii=False,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
     output_queue = queue.Queue()
 
     def read_output():
-        for line in process.stdout or []:
-            output_queue.put(line)
+        with diagnostic_path.open("a", encoding="utf-8") as diagnostic_file:
+            for line in process.stdout or []:
+                diagnostic_file.write(line)
+                diagnostic_file.flush()
+                output_queue.put(line)
+            try:
+                return_code = process.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                return_code = process.poll()
+            diagnostic_file.write(
+                json.dumps(
+                    {
+                        "event": "worker_output_closed",
+                        "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+                        "return_code": return_code,
+                        "return_code_hex": f"0x{(int(return_code or 0) & 0xFFFFFFFF):08X}",
+                    }
+                )
+                + "\n"
+            )
+            diagnostic_file.flush()
 
-    reader = threading.Thread(target=read_output, name="hymt2-worker-output", daemon=True)
-    reader.start()
     _WORKER_PROCESS = process
     _WORKER_OUTPUT = output_queue
+    _WORKER_DIAGNOSTIC_PATH = diagnostic_path
+    reader = threading.Thread(target=read_output, name="hymt2-worker-output", daemon=True)
     _WORKER_READER = reader
     _WORKER_WARM = False
+    reader.start()
     return process, output_queue
 
 
@@ -231,9 +372,12 @@ def warm_hymt2_worker(status_callback=None) -> None:
             deadline = time.monotonic() + 300
             while True:
                 if time.monotonic() >= deadline:
+                    diagnostic_path = _worker_diagnostic_path(process)
                     process.kill()
                     _discard_hymt2_worker(process)
-                    raise RuntimeError("HY-MT2 warm-up timed out after 5 minutes.")
+                    raise RuntimeError(
+                        f"HY-MT2 warm-up timed out after 5 minutes. Diagnostic log: {diagnostic_path or 'unavailable'}"
+                    )
                 try:
                     line = output_queue.get(timeout=0.25)
                 except queue.Empty:
@@ -250,7 +394,10 @@ def warm_hymt2_worker(status_callback=None) -> None:
                 if event.get("event") != "response" or event.get("request_id") != request_id:
                     continue
                 if event.get("error"):
-                    raise RuntimeError(event["error"])
+                    error = str(event["error"])
+                    diagnostic_path = _worker_diagnostic_path(process)
+                    _terminate_hymt2_worker(process)
+                    raise RuntimeError(f"{error} Diagnostic log: {diagnostic_path or 'unavailable'}")
                 if event.get("warmed"):
                     _WORKER_WARM = True
                     return
@@ -260,16 +407,16 @@ def warm_hymt2_worker(status_callback=None) -> None:
                 _discard_hymt2_worker(process)
             raise
 
-        _discard_hymt2_worker(process)
-        details = "".join(worker_output).strip() or "no worker output"
-        if process.returncode == 3221225477:
-            raise RuntimeError(
-                "HY-MT2 worker suffered a native Windows crash (0xC0000005) during warm-up. "
-                f"Worker output: {details[-3000:]}"
-            )
-        raise RuntimeError(
-            f"HY-MT2 worker stopped during warm-up with exit code {process.returncode}: {details[-3000:]}"
+        _collect_remaining_worker_output(process, output_queue, worker_output)
+        diagnostic_path = _worker_diagnostic_path(process)
+        error = _format_worker_exit(
+            process.returncode,
+            "model warm-up",
+            worker_output,
+            diagnostic_path,
         )
+        _discard_hymt2_worker(process)
+        raise RuntimeError(error)
 
 
 def _translate_with_hymt2_worker(
@@ -297,6 +444,8 @@ def _translate_with_hymt2_worker(
         }
         worker_output = []
         log_to_job(job_id, "Sending translation request to persistent HY-MT2 worker.")
+        diagnostic_path = _worker_diagnostic_path(process)
+        log_to_job(job_id, f"HY-MT2 diagnostic log: {diagnostic_path or 'unavailable'}")
         register_process(job_id, process)
         try:
             if process.stdin is None:
@@ -345,7 +494,10 @@ def _translate_with_hymt2_worker(
                 if event.get("event") != "response" or event.get("request_id") != request_id:
                     continue
                 if event.get("error"):
-                    raise RuntimeError(event["error"])
+                    error = str(event["error"])
+                    diagnostic_path = _worker_diagnostic_path(process)
+                    _terminate_hymt2_worker(process)
+                    raise RuntimeError(f"{error} Diagnostic log: {diagnostic_path or 'unavailable'}")
                 translations = event.get("translations")
                 if not isinstance(translations, list) or len(translations) != len(texts) or not all(isinstance(text, str) for text in translations):
                     raise RuntimeError("HY-MT2 worker returned an invalid translation result.")
@@ -362,15 +514,17 @@ def _translate_with_hymt2_worker(
         finally:
             unregister_process(job_id, process)
 
-        details = "".join(worker_output).strip() or "no worker output"
+        _collect_remaining_worker_output(process, output_queue, worker_output)
         return_code = process.returncode
+        diagnostic_path = _worker_diagnostic_path(process)
+        error = _format_worker_exit(
+            return_code,
+            "translation",
+            worker_output,
+            diagnostic_path,
+        )
         _discard_hymt2_worker(process)
-        if return_code == 3221225477:
-            details = (
-                "Native Torch crash (0xC0000005) while loading or running HY-MT2. "
-                f"Worker output: {details}"
-            )
-        raise RuntimeError(f"HY-MT2 worker stopped with exit code {return_code}: {details[-1000:]}")
+        raise RuntimeError(error)
 
 
 def clean_translation(text: str) -> str:

@@ -5,6 +5,8 @@ import "."
 Panel {
     id: root
 
+    signal requestUrlImport()
+
     property bool dropActive: false
 
     title: I18n.t("Source media")
@@ -157,7 +159,16 @@ Panel {
         }
 
         AppButton {
-            text: controller.videoPath.length > 0 ? I18n.t("Replace") : I18n.t("Browse")
+            text: I18n.t("From link")
+            iconGlyph: "\uE71B"
+            compact: true
+            enabled: !controller.isSelectedJobProcessing
+            onClicked: root.requestUrlImport()
+        }
+
+        AppButton {
+            visible: controller.videoPath.length > 0
+            text: I18n.t("Replace")
             iconGlyph: "\uE8B7"
             compact: true
             enabled: !controller.isSelectedJobProcessing

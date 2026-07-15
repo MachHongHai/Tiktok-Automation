@@ -11,6 +11,7 @@ Item {
     signal requestBack()
     signal openJobDetail()
     signal requestBatchSettings()
+    signal requestUrlImport()
 
     property bool dropActive: false
 
@@ -237,6 +238,12 @@ Item {
                             text: I18n.t("Add folder")
                             iconGlyph: "\uE8B7"
                             onTriggered: controller.browseBatchFolder()
+                        }
+
+                        AppMenuItem {
+                            text: I18n.t("Add from link")
+                            iconGlyph: "\uE71B"
+                            onTriggered: root.requestUrlImport()
                         }
                     }
                 }
