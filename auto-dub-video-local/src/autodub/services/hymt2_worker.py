@@ -347,6 +347,38 @@ def _cpu_model_path() -> str:
         ) from exc
 
 
+def _local_transformers_model_source(model_name: str) -> tuple[str, bool]:
+    """Resolve an installed Hub model to its snapshot so startup stays offline."""
+    from autodub.config import HF_HOME
+
+    configured_path = Path(model_name).expanduser()
+    if configured_path.is_dir():
+        return str(configured_path.resolve()), True
+
+    try:
+        from huggingface_hub import snapshot_download
+
+        snapshot_path = Path(
+            snapshot_download(
+                repo_id=model_name,
+                cache_dir=str(Path(HF_HOME) / "hub"),
+                local_files_only=True,
+            )
+        )
+    except Exception:
+        return model_name, False
+
+    required_files = ("config.json", "tokenizer_config.json", "tokenizer.json")
+    has_weights = (snapshot_path / "model.safetensors").is_file() or (
+        snapshot_path / "model.safetensors.index.json"
+    ).is_file()
+    if snapshot_path.is_dir() and has_weights and all(
+        (snapshot_path / filename).is_file() for filename in required_files
+    ):
+        return str(snapshot_path.resolve()), True
+    return model_name, False
+
+
 def _load_model(model_name: str):
     # Configure Torch before runtime_profile() probes CUDA. CUDA telemetry can
     # initialize Torch's parallel runtime, after which interop threads are
@@ -401,15 +433,37 @@ def _load_model(model_name: str):
     from transformers import AutoModelForCausalLM, AutoTokenizer
     device = "cuda" if torch.cuda.is_available() else "cpu"
     dtype = torch.bfloat16 if device == "cuda" else torch.float32
-    _emit_diagnostic("tokenizer_load_start", torch, model=model_name, dtype=str(dtype), device=device)
-    _emit_event({"event": "status", "detail": "Loading HY-MT2 tokenizer"})
-    tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
+    model_source, local_files_only = _local_transformers_model_source(model_name)
+    _emit_diagnostic(
+        "tokenizer_load_start",
+        torch,
+        model=model_name,
+        model_source=model_source,
+        local_files_only=local_files_only,
+        dtype=str(dtype),
+        device=device,
+    )
+    _emit_event(
+        {
+            "event": "status",
+            "detail": "Loading HY-MT2 tokenizer from local cache" if local_files_only else "Loading HY-MT2 tokenizer",
+        }
+    )
+    tokenizer = AutoTokenizer.from_pretrained(
+        model_source,
+        trust_remote_code=True,
+        local_files_only=local_files_only,
+        # Transformers 4.57 misclassifies this local Hunyuan tokenizer as
+        # Mistral. Keep Tencent's tokenizer unchanged while suppressing that fix.
+        fix_mistral_regex=False,
+    )
     _emit_diagnostic("tokenizer_load_complete", torch, model=model_name, device=device)
     staged_cuda_load = device == "cuda" and profile.key == "cuda_low_memory"
     load_options = {
         "dtype": dtype,
         "trust_remote_code": True,
         "use_safetensors": True,
+        "local_files_only": local_files_only,
     }
     if staged_cuda_load:
         # Loading a single large safetensors shard directly into CUDA through
@@ -440,7 +494,7 @@ def _load_model(model_name: str):
             ),
         }
     )
-    model = AutoModelForCausalLM.from_pretrained(model_name, **load_options)
+    model = AutoModelForCausalLM.from_pretrained(model_source, **load_options)
     _emit_diagnostic(
         "weights_load_complete",
         torch,

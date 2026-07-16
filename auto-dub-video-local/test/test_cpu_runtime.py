@@ -238,6 +238,28 @@ class CpuRuntimeTests(unittest.TestCase):
         self.assertEqual(model.requests[0]["messages"][0]["content"], "Translate this")
         self.assertLessEqual(model.requests[0]["max_tokens"], 384)
 
+    def test_hymt2_resolves_an_installed_transformers_snapshot_without_network(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            snapshot = Path(temp_dir) / "snapshot"
+            snapshot.mkdir()
+            for filename in ("config.json", "tokenizer_config.json", "tokenizer.json", "model.safetensors"):
+                (snapshot / filename).write_bytes(b"installed")
+
+            with mock.patch("huggingface_hub.snapshot_download", return_value=str(snapshot)) as resolve_snapshot:
+                model_source, local_files_only = hymt2_worker._local_transformers_model_source(
+                    "tencent/Hy-MT2-1.8B"
+                )
+
+        self.assertEqual(model_source, str(snapshot.resolve()))
+        self.assertTrue(local_files_only)
+        from autodub.config import HF_HOME
+
+        resolve_snapshot.assert_called_once_with(
+            repo_id="tencent/Hy-MT2-1.8B",
+            cache_dir=str(Path(HF_HOME) / "hub"),
+            local_files_only=True,
+        )
+
     def test_hymt2_torch_threading_is_configured_only_once(self):
         fake_torch = SimpleNamespace(
             set_num_threads=mock.Mock(),

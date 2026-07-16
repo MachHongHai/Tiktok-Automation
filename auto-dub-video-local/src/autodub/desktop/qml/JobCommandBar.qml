@@ -16,8 +16,6 @@ Rectangle {
     readonly property bool canRestart: controller.hasSelectedJob && !controller.isSelectedJobProcessing
         && !controller.isSelectedJobQueued
         && controller.selectedStatus !== "pending"
-        && controller.selectedStatus !== "paused"
-        && controller.selectedStatus !== "awaiting_review"
     readonly property string headline: root.selectedProcessing
         ? I18n.t(controller.selectedStageLabel)
         : controller.selectedProgress >= 100
@@ -145,7 +143,7 @@ Rectangle {
             }
 
             AppButton {
-                visible: root.canRestart && !root.hasOutput
+                visible: root.canRestart
                 text: I18n.t("Restart")
                 iconGlyph: "\uE72C"
                 tone: "primary"
