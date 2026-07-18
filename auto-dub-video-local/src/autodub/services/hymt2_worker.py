@@ -2,6 +2,7 @@ import argparse
 import gc
 import json
 import os
+import re
 import shutil
 import sys
 import traceback
@@ -164,6 +165,13 @@ def _context_indices(texts: list[str], index: int) -> list[int]:
     return sorted(selected)
 
 
+def _is_standalone_label(text: str) -> bool:
+    """Keep short labels independent so nearby subtitles cannot replace their identity."""
+    normalized = (text or "").strip()
+    words = re.findall(r"\w+", normalized, flags=re.UNICODE)
+    return bool(normalized) and len(normalized) <= 48 and len(words) <= 4
+
+
 def _build_prompt(
     texts: list[str],
     source_languages: list[str],
@@ -172,6 +180,16 @@ def _build_prompt(
     *,
     include_context: bool = True,
 ) -> str:
+    source_text = texts[index].strip()
+    if _is_standalone_label(source_text):
+        return (
+            f"Translate this standalone subtitle label into {target_language_name}. Translate only the "
+            "[Source Text]. Preserve the exact identity of any named item, rank letter, number, unit and "
+            "punctuation. Do not infer or substitute a different item. Use standard target-language spelling. "
+            "Only output the translated result without any additional explanation.\n\n"
+            f"[Source Text]\n{source_text}"
+        )
+
     context_block = ""
     if include_context:
         context_indices = _context_indices(texts, index)
@@ -200,9 +218,10 @@ def _build_prompt(
         f"{context_block}Please accurately translate the [Source Text] into {target_language_name}, "
         "taking the provided background information into consideration. Translate only the [Source Text], "
         "not the background, and never copy a background sentence even when its wording is similar. Preserve its "
-        "meaning, names, numbers, and percentages exactly; do not paraphrase, expand, or omit information. "
+        "meaning, names, numbers, and percentages exactly; do not paraphrase, expand, or omit information. Use "
+        "standard spelling and natural grammar in the target language. "
         "Only output the translated result without any additional explanation.\n\n"
-        f"[Source Text]\n{texts[index]}"
+        f"[Source Text]\n{source_text}"
     )
 
 

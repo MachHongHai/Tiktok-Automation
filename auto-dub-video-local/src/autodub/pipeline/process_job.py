@@ -301,7 +301,7 @@ def process_job_sync(job_id: str, _reporter: ProgressReporter | None = None):
         temp_audio_wav = os.path.join(job_dir, "temp", "audio.wav")
         source_segments_json = os.path.join(job_dir, "temp", "source_segments.json")
         translation_signature = _signature(
-            _file_state(video_input), "whisperx-aligned-sentences-v2", "hymt2-tencent-structured-context-v17",
+            _file_state(video_input), TIMING_SOURCE, "hymt2-tencent-structured-context-v17",
             job.target_language, job.enable_audio_separation, "hymt2", HYMT2_MODEL_REVISION
         )
 

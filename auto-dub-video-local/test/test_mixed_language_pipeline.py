@@ -151,6 +151,70 @@ class MixedLanguagePipelineTests(unittest.TestCase):
         self.assertEqual(corrected[0]["text"], "Xin chao.")
         self.assertEqual(model.language, "vi")
 
+    def test_bad_alignment_is_rejected_without_compressing_the_source_span(self):
+        source = {
+            "start": 0.031,
+            "end": 19.893,
+            "text": "Cau thu nhat rat dai. Cau thu hai cung dai. Cau thu ba. Cau thu bon.",
+            "language": "vi",
+        }
+        compressed = [
+            {
+                "start": 0.031,
+                "end": 8.781,
+                "text": source["text"],
+                "words": [
+                    {"word": word, "start": 0.031, "end": 0.081, "score": 0.01}
+                    for word in source["text"].split()
+                ],
+            }
+        ]
+        original_load_align_model = transcribe.whisperx.load_align_model
+        original_align = transcribe.whisperx.align
+        original_release = transcribe._release_cuda
+        original_log = transcribe.log_to_job
+        transcribe.whisperx.load_align_model = lambda **_kwargs: (object(), {})
+        transcribe.whisperx.align = lambda *_args, **_kwargs: {"segments": compressed}
+        transcribe._release_cuda = lambda *_args, **_kwargs: None
+        transcribe.log_to_job = lambda *_args, **_kwargs: None
+        try:
+            aligned = transcribe._align_segments_by_language(
+                np.zeros(16_000 * 21, dtype=np.float32),
+                [source],
+                "cpu",
+                "test-job",
+            )
+        finally:
+            transcribe.whisperx.load_align_model = original_load_align_model
+            transcribe.whisperx.align = original_align
+            transcribe._release_cuda = original_release
+            transcribe.log_to_job = original_log
+
+        self.assertEqual(len(aligned), 4)
+        self.assertEqual(aligned[0]["start"], source["start"])
+        self.assertEqual(aligned[-1]["end"], source["end"])
+        self.assertEqual(" ".join(segment["text"] for segment in aligned), source["text"])
+        self.assertTrue(all(left["end"] <= right["start"] for left, right in zip(aligned, aligned[1:])))
+
+    def test_valid_alignment_keeps_model_sentence_timestamps(self):
+        source = {"start": 1.0, "end": 6.0, "text": "First sentence. Second sentence.", "language": "en"}
+        candidate = [
+            {
+                "start": 1.1,
+                "end": 3.0,
+                "text": "First sentence.",
+                "words": [{"word": "First", "start": 1.1, "end": 1.5, "score": 0.8}],
+            },
+            {
+                "start": 3.1,
+                "end": 5.8,
+                "text": "Second sentence.",
+                "words": [{"word": "Second", "start": 3.1, "end": 3.6, "score": 0.7}],
+            },
+        ]
+
+        self.assertEqual(transcribe._alignment_quality(source, candidate), (True, "coverage=0.94"))
+
     def test_translation_uses_the_language_from_each_segment(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             input_path = Path(temp_dir) / "source.json"
@@ -227,13 +291,13 @@ class MixedLanguagePipelineTests(unittest.TestCase):
             self.assertFalse(_timing_file_is_current(legacy_path))
 
     def test_hymt2_prompt_batches_preserve_order_and_context(self):
-        texts = ["Hello", "How are you?", "Fine.", "Thanks", "Bye"]
+        texts = ["Hello", "How are you doing today friend?", "Fine.", "Thanks", "Bye"]
         self.assertEqual(list(_inference_batches(texts, batch_size=4)), [(0, 4), (4, 5)])
         self.assertEqual(_context_before_start(["A" * 1300, "B"], 2), 1)
         self.assertEqual(_context_after_end(["A", "B" * 1300], 1), 1)
 
         prompt = _build_prompt(
-            ["Hello", "How are you?", "Fine."],
+            ["Hello", "How are you doing today friend?", "Fine."],
             ["English", "English", "English"],
             1,
             "Vietnamese",
@@ -251,9 +315,10 @@ class MixedLanguagePipelineTests(unittest.TestCase):
             "background information into consideration. Translate only the [Source Text], "
             "not the background, and never copy a background sentence even when its wording is similar. Preserve its "
             "meaning, names, numbers, and percentages exactly; do not paraphrase, expand, or omit information. "
+            "Use standard spelling and natural grammar in the target language. "
             "Only output the translated result without any additional explanation.\n\n"
             "[Source Text]\n"
-            "How are you?",
+            "How are you doing today friend?",
         )
 
         prompts = _build_translation_prompts(
@@ -291,15 +356,15 @@ class MixedLanguagePipelineTests(unittest.TestCase):
         )
 
         wide_prompt = _build_prompt(
-            [f"Line {number}" for number in range(9)],
+            [f"Context line {number} contains enough ordinary words." for number in range(9)],
             ["English"] * 9,
             4,
             "Vietnamese",
         )
         for number in (1, 2, 3, 5, 6, 7):
-            self.assertIn(f"Line {number}", wide_prompt)
+            self.assertIn(f"Context line {number}", wide_prompt)
         for number in (0, 8):
-            self.assertNotIn(f"Line {number}", wide_prompt)
+            self.assertNotIn(f"Context line {number}", wide_prompt)
 
         long_texts = [f"Line {number} " + ("A" * 450) for number in range(20)]
         long_context_indices = _context_indices(long_texts, 10)
@@ -315,14 +380,18 @@ class MixedLanguagePipelineTests(unittest.TestCase):
         )
 
         mixed_prompt = _build_prompt(
-            ["Hello", "今日は特別なメニューがあります。", "¿Puedes hacerlo sin gluten?"],
+            [
+                "Hello",
+                "今日は特別なメニューがありますので、ぜひお試しください。",
+                "¿Puedes hacerlo sin gluten para mi familia hoy?",
+            ],
             ["English", "Japanese", "Spanish"],
-            1,
+            2,
             "Vietnamese",
         )
         self.assertIn("Hello", mixed_prompt)
-        self.assertIn("¿Puedes hacerlo sin gluten?", mixed_prompt)
-        self.assertIn("[Source Text]\n今日は特別なメニューがあります。", mixed_prompt)
+        self.assertIn("今日は特別なメニューがありますので、ぜひお試しください。", mixed_prompt)
+        self.assertIn("[Source Text]\n¿Puedes hacerlo sin gluten para mi familia hoy?", mixed_prompt)
 
         shake_texts = [
             "If you only drink a protein shake after training, you are in the top 50%.",
@@ -368,11 +437,10 @@ class MixedLanguagePipelineTests(unittest.TestCase):
             "Vietnamese",
         )
         self.assertIn("[Source Text]\nKiwi.", kiwi_prompt)
-        self.assertIn("Mango.", kiwi_prompt)
-        self.assertIn("C tier.", kiwi_prompt)
-        self.assertIn("Easy to overeat.", kiwi_prompt)
-        self.assertIn("[Previous Subtitles]", kiwi_prompt)
-        self.assertIn("[End Background Information]", kiwi_prompt)
+        self.assertIn("standalone subtitle label", kiwi_prompt)
+        self.assertNotIn("Mango.", kiwi_prompt)
+        self.assertNotIn("C tier.", kiwi_prompt)
+        self.assertNotIn("[Previous Subtitles]", kiwi_prompt)
 
         default_prompt = _build_prompt(
             ["Hello"],
@@ -383,14 +451,24 @@ class MixedLanguagePipelineTests(unittest.TestCase):
         )
         self.assertEqual(
             default_prompt,
-            "Please accurately translate the [Source Text] into Vietnamese, taking the provided "
-            "background information into consideration. Translate only the [Source Text], "
-            "not the background, and never copy a background sentence even when its wording is similar. Preserve its "
-            "meaning, names, numbers, and percentages exactly; do not paraphrase, expand, or omit information. "
+            "Translate this standalone subtitle label into Vietnamese. Translate only the "
+            "[Source Text]. Preserve the exact identity of any named item, rank letter, number, unit and "
+            "punctuation. Do not infer or substitute a different item. Use standard target-language spelling. "
             "Only output the translated result without any additional explanation.\n\n"
             "[Source Text]\n"
             "Hello",
         )
+
+        isolated_kiwi_prompt = _build_prompt(
+            ["Mango.", "C tier.", "Kiwi."],
+            ["English"] * 3,
+            2,
+            "Vietnamese",
+        )
+        self.assertIn("standalone subtitle label", isolated_kiwi_prompt)
+        self.assertIn("Do not infer or substitute a different item.", isolated_kiwi_prompt)
+        self.assertNotIn("Mango.", isolated_kiwi_prompt)
+        self.assertNotIn("C tier.", isolated_kiwi_prompt)
         self.assertEqual(_output_token_budget(2), 24)
         self.assertEqual(_output_token_budget(20), 96)
 

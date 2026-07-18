@@ -56,6 +56,7 @@ class AutoDubController(QObject):
     videoThumbnailChanged = Signal()
     targetLanguageChanged = Signal()
     ttsVoiceChanged = Signal()
+    ttsVoiceOptionsChanged = Signal()
     enableAudioSeparationChanged = Signal()
     originalVolumeChanged = Signal()
     workflowModeChanged = Signal()
@@ -573,13 +574,22 @@ class AutoDubController(QObject):
 
     @targetLanguage.setter
     def targetLanguage(self, value):
-        if self._target_language != value:
-            self._target_language = value
-            if self._tts_voice not in self._voice_codes_for_language(value):
-                self._tts_voice = self._voice_options_for_language(value)[0]["voice"]
-                self.ttsVoiceChanged.emit()
+        language = str(value or "vi")
+        language_changed = self._target_language != language
+        normalized_voice = self._normalized_voice_for_language(language, self._tts_voice)
+        voice_changed = self._tts_voice != normalized_voice
+        if not language_changed and not voice_changed:
+            return
+
+        self._target_language = language
+        self._tts_voice = normalized_voice
+        if language_changed:
             self.targetLanguageChanged.emit()
             self.languageOptionsChanged.emit()
+        if voice_changed:
+            self.ttsVoiceChanged.emit()
+        # The option model and selected index depend on both language and voice.
+        self.ttsVoiceOptionsChanged.emit()
 
     @Property(str, notify=languageOptionsChanged)
     def targetLanguageLabel(self):
@@ -591,15 +601,17 @@ class AutoDubController(QObject):
 
     @ttsVoice.setter
     def ttsVoice(self, value):
-        if self._tts_voice != value:
-            self._tts_voice = value
+        normalized_voice = self._normalized_voice_for_language(self._target_language, value)
+        if self._tts_voice != normalized_voice:
+            self._tts_voice = normalized_voice
             self.ttsVoiceChanged.emit()
+            self.ttsVoiceOptionsChanged.emit()
 
-    @Property("QVariantList", notify=languageOptionsChanged)
+    @Property("QVariantList", notify=ttsVoiceOptionsChanged)
     def ttsVoiceOptions(self):
         return self._voice_options_for_language(self._target_language)
 
-    @Property(int, notify=ttsVoiceChanged)
+    @Property(int, notify=ttsVoiceOptionsChanged)
     def ttsVoiceIndex(self):
         voices = self._voice_options_for_language(self._target_language)
         for index, item in enumerate(voices):
@@ -1568,10 +1580,16 @@ class AutoDubController(QObject):
             )
             for job in jobs
         ).most_common(1)[0]
-        self._workflow_mode, self._target_language, self._tts_voice, self._enable_audio_separation, self._original_volume = common
+        workflow_mode, target_language, tts_voice, audio_separation, original_volume = common
+        self._workflow_mode = workflow_mode
+        self._target_language = str(target_language or "vi")
+        self._tts_voice = self._normalized_voice_for_language(self._target_language, tts_voice)
+        self._enable_audio_separation = audio_separation
+        self._original_volume = original_volume
         self.workflowModeChanged.emit()
         self.targetLanguageChanged.emit()
         self.ttsVoiceChanged.emit()
+        self.ttsVoiceOptionsChanged.emit()
         self.enableAudioSeparationChanged.emit()
         self.originalVolumeChanged.emit()
 
@@ -1914,8 +1932,11 @@ class AutoDubController(QObject):
         if migrate_legacy_single_export(job):
             job = job_store.get_job(job.job_id) or job
         self._workflow_mode = job.mode
-        self._target_language = job.target_language
-        self._tts_voice = job.tts_voice
+        self._target_language = str(job.target_language or "vi")
+        self._tts_voice = self._normalized_voice_for_language(self._target_language, job.tts_voice)
+        if self._tts_voice != job.tts_voice and job.status != "processing":
+            job = job_store.update_job(job.job_id, tts_voice=self._tts_voice) or job
+            job_store.log_to_job(job.job_id, "Updated an incompatible saved TTS voice to match the target language.")
         self._enable_audio_separation = job.enable_audio_separation
         self._original_volume = job.original_video_volume
         input_path = self._resolve_job_file(job, ("video_input", "input_video"), ("input", "video.mp4"))
@@ -1929,6 +1950,7 @@ class AutoDubController(QObject):
         self.videoThumbnailChanged.emit()
         self.targetLanguageChanged.emit()
         self.ttsVoiceChanged.emit()
+        self.ttsVoiceOptionsChanged.emit()
         self.enableAudioSeparationChanged.emit()
         self.originalVolumeChanged.emit()
         self.workflowModeChanged.emit()
@@ -2514,6 +2536,14 @@ class AutoDubController(QObject):
 
     def _voice_codes_for_language(self, language_code):
         return [item["voice"] for item in self._voice_options_for_language(language_code)]
+
+    def _normalized_voice_for_language(self, language_code, voice):
+        """Return a valid Edge voice for the selected output language."""
+        options = self._voice_options_for_language(language_code)
+        supported_voices = [item["voice"] for item in options]
+        if voice in supported_voices:
+            return voice
+        return supported_voices[0] if supported_voices else ""
 
     def _load_job_preview(self, job):
         self._subtitle_position_x = job.subtitle_style.position_x_percent

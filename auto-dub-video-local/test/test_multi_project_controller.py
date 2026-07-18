@@ -19,6 +19,48 @@ from autodub.schemas.job import JobConfig
 
 
 class MultiProjectControllerTests(unittest.TestCase):
+    def test_target_language_replaces_an_incompatible_saved_voice(self):
+        controller = SimpleNamespace(
+            _target_language="vi",
+            _tts_voice="vi-VN-NamMinhNeural",
+            _voice_options_for_language=lambda language: {
+                "vi": [{"voice": "vi-VN-HoaiMyNeural"}],
+                "en": [{"voice": "en-US-JennyNeural"}, {"voice": "en-US-GuyNeural"}],
+            }[language],
+            targetLanguageChanged=SimpleNamespace(emit=Mock()),
+            languageOptionsChanged=SimpleNamespace(emit=Mock()),
+            ttsVoiceChanged=SimpleNamespace(emit=Mock()),
+            ttsVoiceOptionsChanged=SimpleNamespace(emit=Mock()),
+        )
+        controller._normalized_voice_for_language = AutoDubController._normalized_voice_for_language.__get__(controller)
+
+        AutoDubController.targetLanguage.fset(controller, "en")
+
+        self.assertEqual(controller._target_language, "en")
+        self.assertEqual(controller._tts_voice, "en-US-JennyNeural")
+        controller.targetLanguageChanged.emit.assert_called_once()
+        controller.ttsVoiceChanged.emit.assert_called_once()
+        controller.ttsVoiceOptionsChanged.emit.assert_called_once()
+
+    def test_voice_setter_rejects_a_voice_from_another_language(self):
+        controller = SimpleNamespace(
+            _target_language="en",
+            _tts_voice="en-US-GuyNeural",
+            _voice_options_for_language=lambda language: [
+                {"voice": "en-US-JennyNeural"},
+                {"voice": "en-US-GuyNeural"},
+            ],
+            ttsVoiceChanged=SimpleNamespace(emit=Mock()),
+            ttsVoiceOptionsChanged=SimpleNamespace(emit=Mock()),
+        )
+        controller._normalized_voice_for_language = AutoDubController._normalized_voice_for_language.__get__(controller)
+
+        AutoDubController.ttsVoice.fset(controller, "vi-VN-NamMinhNeural")
+
+        self.assertEqual(controller._tts_voice, "en-US-JennyNeural")
+        controller.ttsVoiceChanged.emit.assert_called_once()
+        controller.ttsVoiceOptionsChanged.emit.assert_called_once()
+
     def test_pipeline_waits_for_startup_warmup_without_blocking_the_ui_thread(self):
         warmup_done = threading.Event()
         selected_job = SimpleNamespace(status="pending")

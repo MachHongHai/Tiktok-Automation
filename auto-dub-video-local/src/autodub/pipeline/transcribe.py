@@ -1,6 +1,7 @@
 import gc
 import json
 import re
+import statistics
 import threading
 
 import torch
@@ -16,8 +17,12 @@ _WARM_ASR_MODEL = None
 _WARM_DEVICE = None
 _AUDIO_SAMPLE_RATE = 16000
 _SEGMENT_LANGUAGE_CONFIDENCE = 0.55
-TIMING_SOURCE = "whisperx-aligned-sentences-v2"
+_ALIGNMENT_MIN_COVERAGE_RATIO = 0.55
+_ALIGNMENT_MIN_MEDIAN_WORD_SCORE = 0.03
+TIMING_SOURCE = "whisperx-validated-sentences-v3"
 _CJK_RE = re.compile(r"[\u3040-\u30ff\u3400-\u9fff\uac00-\ud7af]")
+_SENTENCE_END_CHARS = frozenset(".!?\u2026\u3002\uff01\uff1f")
+_SENTENCE_CLOSERS = frozenset("\"'\u2019\u201d)]}\u3009\u300b\u300d\u300f\u3011")
 
 
 def warm_whisperx_model():
@@ -198,8 +203,130 @@ def _language_for_aligned_segment(segment, source_segments, fallback_language: s
     )
 
 
+def _split_sentence_text(text: str) -> list[str]:
+    """Split complete sentences without assuming that the language uses spaces."""
+    normalized = " ".join(str(text or "").split())
+    if not normalized:
+        return []
+
+    sentences = []
+    sentence_start = 0
+    index = 0
+    while index < len(normalized):
+        character = normalized[index]
+        if character not in _SENTENCE_END_CHARS:
+            index += 1
+            continue
+        if (
+            character == "."
+            and index > 0
+            and index + 1 < len(normalized)
+            and normalized[index - 1].isdigit()
+            and normalized[index + 1].isdigit()
+        ):
+            index += 1
+            continue
+
+        sentence_end = index + 1
+        while sentence_end < len(normalized) and (
+            normalized[sentence_end] in _SENTENCE_END_CHARS
+            or normalized[sentence_end] in _SENTENCE_CLOSERS
+        ):
+            sentence_end += 1
+
+        has_boundary = sentence_end >= len(normalized)
+        if not has_boundary:
+            has_boundary = normalized[sentence_end].isspace() or character in "\u2026\u3002\uff01\uff1f"
+        if has_boundary:
+            sentence = normalized[sentence_start:sentence_end].strip()
+            if sentence:
+                sentences.append(sentence)
+            while sentence_end < len(normalized) and normalized[sentence_end].isspace():
+                sentence_end += 1
+            sentence_start = sentence_end
+            index = sentence_end
+            continue
+        index += 1
+
+    remainder = normalized[sentence_start:].strip()
+    if remainder:
+        sentences.append(remainder)
+    return sentences
+
+
+def _speech_weight(text: str) -> int:
+    """Estimate spoken length consistently for spaced and unspaced languages."""
+    return max(1, sum(character.isalnum() for character in str(text or "")))
+
+
+def _split_segment_proportionally(segment: dict) -> list[dict]:
+    """Keep Whisper's trusted span while deriving sentence-level fallback timing."""
+    sentences = _split_sentence_text(segment.get("text", ""))
+    if len(sentences) <= 1:
+        return [dict(segment)]
+
+    start = float(segment.get("start", 0.0))
+    end = float(segment.get("end", start))
+    duration = max(0.0, end - start)
+    weights = [_speech_weight(sentence) for sentence in sentences]
+    total_weight = sum(weights)
+    elapsed_weight = 0
+    fallback_segments = []
+    for index, (sentence, weight) in enumerate(zip(sentences, weights)):
+        sentence_start = start + duration * elapsed_weight / total_weight
+        elapsed_weight += weight
+        sentence_end = end if index == len(sentences) - 1 else start + duration * elapsed_weight / total_weight
+        fallback_segment = dict(segment)
+        fallback_segment.update(
+            {
+                "start": round(sentence_start, 3),
+                "end": round(max(sentence_start + 0.001, sentence_end), 3),
+                "text": sentence,
+            }
+        )
+        fallback_segment.pop("words", None)
+        fallback_segments.append(fallback_segment)
+    return fallback_segments
+
+
+def _alignment_quality(source_segment: dict, aligned_segments: list[dict]) -> tuple[bool, str]:
+    """Reject aligners that return legal-looking but physically impossible timing."""
+    if not aligned_segments:
+        return False, "no aligned sentences"
+
+    source_start = float(source_segment.get("start", 0.0))
+    source_end = float(source_segment.get("end", source_start))
+    source_duration = source_end - source_start
+    aligned_start = min(float(segment.get("start", source_start)) for segment in aligned_segments)
+    aligned_end = max(float(segment.get("end", aligned_start)) for segment in aligned_segments)
+    aligned_duration = aligned_end - aligned_start
+    if source_duration <= 0 or aligned_duration <= 0:
+        return False, "non-positive duration"
+    if aligned_start < source_start - 0.25 or aligned_end > source_end + 0.25:
+        return False, "timestamps escaped the Whisper source span"
+
+    coverage_ratio = aligned_duration / source_duration
+    if coverage_ratio < _ALIGNMENT_MIN_COVERAGE_RATIO:
+        return False, f"coverage {coverage_ratio:.2f} is below {_ALIGNMENT_MIN_COVERAGE_RATIO:.2f}"
+
+    word_scores = [
+        float(word["score"])
+        for segment in aligned_segments
+        for word in segment.get("words", [])
+        if word.get("score") is not None
+    ]
+    if word_scores:
+        median_score = statistics.median(word_scores)
+        if median_score < _ALIGNMENT_MIN_MEDIAN_WORD_SCORE:
+            return False, (
+                f"median word score {median_score:.3f} is below "
+                f"{_ALIGNMENT_MIN_MEDIAN_WORD_SCORE:.3f}"
+            )
+    return True, f"coverage={coverage_ratio:.2f}"
+
+
 def _align_segments_by_language(audio, segments, device: str, job_id: str, progress_callback=None):
-    """Apply the matching WhisperX alignment model to each detected language."""
+    """Align each source span and preserve it whenever the aligner is unreliable."""
     grouped_segments = {}
     ordered_languages = []
     for segment in segments:
@@ -220,21 +347,41 @@ def _align_segments_by_language(audio, segments, device: str, job_id: str, progr
             align_model, metadata = whisperx.load_align_model(language_code=language, device=device)
             if progress_callback:
                 progress_callback("aligning", f"Aligning {language} subtitles")
-            aligned_result = whisperx.align(
-                language_segments,
-                align_model,
-                metadata,
-                audio,
-                device,
-                return_char_alignments=False,
-            )
-            aligned_segments.extend(aligned_result["segments"])
+            for source_index, source_segment in enumerate(language_segments, start=1):
+                try:
+                    aligned_result = whisperx.align(
+                        [source_segment],
+                        align_model,
+                        metadata,
+                        audio,
+                        device,
+                        return_char_alignments=False,
+                    )
+                    candidate_segments = aligned_result.get("segments", [])
+                    is_valid, quality_detail = _alignment_quality(source_segment, candidate_segments)
+                    if is_valid:
+                        aligned_segments.extend(candidate_segments)
+                        continue
+                    log_to_job(
+                        job_id,
+                        f"WARNING: Rejected '{language}' alignment for source span {source_index} "
+                        f"({quality_detail}). Preserving Whisper timing with proportional sentence boundaries.",
+                    )
+                except Exception as exc:
+                    log_to_job(
+                        job_id,
+                        f"WARNING: Alignment failed for '{language}' source span {source_index}. "
+                        f"Preserving Whisper timing: {exc}",
+                    )
+                aligned_segments.extend(_split_segment_proportionally(source_segment))
         except Exception as exc:
             log_to_job(
                 job_id,
-                f"WARNING: Alignment failed or is unsupported for '{language}'. Using Whisper timestamps: {exc}",
+                f"WARNING: Alignment model failed or is unsupported for '{language}'. "
+                f"Preserving Whisper spans with proportional sentence boundaries: {exc}",
             )
-            aligned_segments.extend(language_segments)
+            for source_segment in language_segments:
+                aligned_segments.extend(_split_segment_proportionally(source_segment))
         finally:
             if align_model is not None:
                 del align_model
@@ -322,17 +469,13 @@ def transcribe(audio_path: str, output_json_path: str, source_language: str, job
         if progress_callback:
             progress_callback("transcribed", f"Detected {detected_language or 'unknown'} speech")
 
-        if profile.cuda_available:
-            sentence_segments = _align_segments_by_language(
-                audio,
-                initial_segments,
-                device,
-                job_id,
-                progress_callback=progress_callback,
-            )
-        else:
-            sentence_segments = initial_segments
-            log_to_job(job_id, "CPU mode: using WhisperX sentence boundaries before final alignment.")
+        sentence_segments = _align_segments_by_language(
+            audio,
+            initial_segments,
+            device,
+            job_id,
+            progress_callback=progress_callback,
+        )
         if progress_callback:
             progress_callback("segmenting", f"Prepared {len(sentence_segments)} complete sentences")
 
@@ -350,13 +493,21 @@ def transcribe(audio_path: str, output_json_path: str, source_language: str, job
             detected_language or "en",
             job_id,
         )
-        aligned_segments = _align_segments_by_language(
-            audio,
-            source_segments,
-            device,
-            job_id,
-            progress_callback=None,
+        has_language_switch = any(
+            (segment.get("language") or detected_language or "en") != (detected_language or "en")
+            for segment in source_segments
         )
+        if has_language_switch:
+            aligned_segments = _align_segments_by_language(
+                audio,
+                source_segments,
+                device,
+                job_id,
+                progress_callback=None,
+            )
+        else:
+            aligned_segments = source_segments
+            log_to_job(job_id, "Keeping validated sentence timestamps; no language-switch realignment is needed.")
 
         output_segments = []
         for segment in aligned_segments:
