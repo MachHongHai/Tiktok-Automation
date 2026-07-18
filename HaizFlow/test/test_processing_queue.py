@@ -14,7 +14,7 @@ from haizflow.services.processing_queue import SerialProcessingQueue
 
 
 class SerialProcessingQueueTests(unittest.TestCase):
-    def test_runs_jobs_in_fifo_order_without_parallel_execution(self):
+    def test_runs_videos_in_fifo_order_without_parallel_execution(self):
         started = []
         completed = []
         active_count = 0
@@ -22,7 +22,7 @@ class SerialProcessingQueueTests(unittest.TestCase):
         done = threading.Event()
         lock = threading.Lock()
 
-        def runner(job_id):
+        def runner(video_id):
             nonlocal active_count, maximum_active_count
             with lock:
                 active_count += 1
@@ -47,16 +47,16 @@ class SerialProcessingQueueTests(unittest.TestCase):
         self.assertEqual(started, ["first", "second", "third"])
         self.assertEqual(completed, ["first", "second", "third"])
         self.assertEqual(maximum_active_count, 1)
-        self.assertIsNone(queue.active_job_id)
+        self.assertIsNone(queue.active_video_id)
         self.assertEqual(queue.pending_ids(), [])
 
-    def test_discard_removes_only_a_waiting_job(self):
+    def test_discard_removes_only_a_waiting_video(self):
         release_first = threading.Event()
         done = threading.Event()
         completed = []
 
-        def runner(job_id):
-            if job_id == "first":
+        def runner(video_id):
+            if video_id == "first":
                 release_first.wait(2)
 
         queue = SerialProcessingQueue(runner, on_finished=completed.append, on_idle=done.set)
@@ -75,8 +75,8 @@ class SerialProcessingQueueTests(unittest.TestCase):
         second_started = threading.Event()
         done = threading.Event()
 
-        def runner(job_id):
-            if job_id == "project-a":
+        def runner(video_id):
+            if video_id == "project-a":
                 first_started.set()
                 release_first.wait(2)
             else:
@@ -88,7 +88,7 @@ class SerialProcessingQueueTests(unittest.TestCase):
 
         # Enqueue is non-blocking: UI work for project B can continue while A runs.
         self.assertTrue(queue.enqueue("project-b"))
-        self.assertEqual(queue.active_job_id, "project-a")
+        self.assertEqual(queue.active_video_id, "project-a")
         self.assertEqual(queue.pending_ids(), ["project-b"])
         self.assertTrue(queue.has_work)
         self.assertTrue(queue.contains("project-a"))
@@ -106,8 +106,8 @@ class SerialProcessingQueueTests(unittest.TestCase):
         errors = []
         done = threading.Event()
 
-        def runner(job_id):
-            if job_id == "broken-project":
+        def runner(video_id):
+            if video_id == "broken-project":
                 raise RuntimeError("pipeline failed")
 
         queue = SerialProcessingQueue(
@@ -115,7 +115,7 @@ class SerialProcessingQueueTests(unittest.TestCase):
             on_started=started.append,
             on_finished=completed.append,
             on_idle=done.set,
-            on_error=lambda job_id, exc: errors.append((job_id, str(exc))),
+            on_error=lambda video_id, exc: errors.append((video_id, str(exc))),
         )
         self.assertTrue(queue.enqueue("broken-project"))
         self.assertTrue(queue.enqueue("next-project"))
@@ -131,15 +131,15 @@ class SerialProcessingQueueTests(unittest.TestCase):
         errors = []
         done = threading.Event()
 
-        def on_started(job_id):
-            if job_id == "invalid-project":
+        def on_started(video_id):
+            if video_id == "invalid-project":
                 raise ValueError("cannot start")
 
         queue = SerialProcessingQueue(
             ran.append,
             on_started=on_started,
             on_idle=done.set,
-            on_error=lambda job_id, exc: errors.append((job_id, str(exc))),
+            on_error=lambda video_id, exc: errors.append((video_id, str(exc))),
         )
         self.assertTrue(queue.enqueue("invalid-project"))
         self.assertTrue(queue.enqueue("valid-project"))
@@ -147,3 +147,26 @@ class SerialProcessingQueueTests(unittest.TestCase):
 
         self.assertEqual(ran, ["valid-project"])
         self.assertEqual(errors, [("invalid-project", "cannot start")])
+
+    def test_shutdown_discards_waiting_work_and_rejects_new_videos(self):
+        active_started = threading.Event()
+        release_active = threading.Event()
+        completed = []
+
+        def runner(video_id):
+            active_started.set()
+            release_active.wait(2)
+
+        queue = SerialProcessingQueue(runner, on_finished=completed.append)
+        self.assertTrue(queue.enqueue("active"))
+        self.assertTrue(active_started.wait(1))
+        self.assertTrue(queue.enqueue("waiting"))
+
+        self.assertFalse(queue.shutdown(timeout_seconds=0.01))
+        self.assertEqual(queue.pending_ids(), [])
+        self.assertFalse(queue.enqueue("too-late"))
+
+        release_active.set()
+        self.assertTrue(queue.shutdown(timeout_seconds=1))
+        self.assertEqual(completed, ["active"])
+        self.assertFalse(queue.has_work)

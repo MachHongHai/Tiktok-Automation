@@ -6,15 +6,15 @@ Panel {
     id: root
 
     title: I18n.t("Activity log")
-    subtitle: controller.hasSelectedJob
-        ? controller.selectedFileName + "  ·  " + I18n.t(controller.selectedStatus)
+    subtitle: AppController.hasSelectedVideo
+        ? AppController.selectedFileName + "  ·  " + I18n.t(AppController.selectedStatus)
         : I18n.t("Live processing output")
     contentPadding: 18
 
     LogViewer {
         Layout.fillWidth: true
         Layout.fillHeight: true
-        text: controller.logs
+        text: AppController.logs
         emptyText: I18n.t("Logs will appear here while this project is processing.")
     }
 }

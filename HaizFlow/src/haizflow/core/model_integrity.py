@@ -14,6 +14,15 @@ HYMT2_CPU_REPO = "tencent/Hy-MT2-1.8B-GGUF"
 HYMT2_CPU_REVISION = "1cd5208700acedef4ef93019b6cfc148b8522d45"
 HYMT2_CPU_FILE = "Hy-MT2-1.8B-Q4_K_M.gguf"
 HYMT2_CPU_SHA256 = "dc5f44fcf1fa496ee7ad725982c0c8c553a4de00259b53af84c4b89fb0c06699"
+WHISPER_REPO = "Systran/faster-whisper-small"
+WHISPER_REVISION = "536b0662742c02347bc0e980a01041f333bce120"
+
+WHISPER_FILES = {
+    "config.json": (2370, "b55496ac7940a7ae47d2c01eab40edfd8701feec1229d9cce3b40014383fb828"),
+    "model.bin": (483546902, "3e305921506d8872816023e4c273e75d2419fb89b24da97b4fe7bce14170d671"),
+    "tokenizer.json": (2203239, "fb7b63191e9bb045082c79fd742a3106a12c99513ab30df4a0d47fa6cb6fd0ab"),
+    "vocabulary.txt": (459861, "34ce3fe1c5041027b3f8d42912270993f986dbc4bb34cf27f951e34a1e453913"),
+}
 
 HYMT2_GPU_FILES = {
     "chat_template.jinja": (654, "b7491ec0e9c869dfce20f2176758099bf248d979dd05530ede99deb21698acee"),
@@ -111,7 +120,7 @@ def _verify(
     for name, path in files.items():
         expected_size, _expected_hash = expected[name]
         if not path.is_file() or path.stat().st_size != expected_size:
-            raise ModelIntegrityError(f"HY-MT2 {kind} file is missing or has the wrong size: {path}")
+            raise ModelIntegrityError(f"{kind} file is missing or has the wrong size: {path}")
 
     manifest_id = _manifest_id(kind, revision, expected)
     marker_path = root / MARKER_NAME
@@ -123,7 +132,7 @@ def _verify(
         actual_hash = _sha256(path)
         if actual_hash != expected_hash:
             raise ModelIntegrityError(
-                f"HY-MT2 {kind} checksum mismatch for {name}: expected {expected_hash}, got {actual_hash}"
+                f"{kind} checksum mismatch for {name}: expected {expected_hash}, got {actual_hash}"
             )
     _write_marker(marker_path, manifest_id, files)
     return root
@@ -146,4 +155,13 @@ def verify_gpu_model(model_directory: Path) -> Path:
         kind="gpu",
         revision=HYMT2_GPU_REVISION,
         expected=HYMT2_GPU_FILES,
+    )
+
+
+def verify_whisper_model(model_directory: Path) -> Path:
+    return _verify(
+        model_directory,
+        kind="Whisper small",
+        revision=WHISPER_REVISION,
+        expected=WHISPER_FILES,
     )

@@ -10,7 +10,8 @@ Item {
 
     signal requestBack()
 
-    readonly property var importer: controller.channelImporter
+    required property var appController
+    readonly property var importer: appController.channelImporter
     readonly property bool hasResults: importer.candidateCount > 0
     property string selectedPlatform: "youtube"
 
@@ -52,7 +53,7 @@ Item {
     }
 
     Component.onCompleted: {
-        controller.prepareChannelImport()
+        root.appController.prepareChannelImport()
         selectedPlatform = restoredPlatform()
         contentFilter.currentIndex = selectedPlatform === "youtube" ? 1 : 0
         if (importer.channelUrl.length > 0)
@@ -75,7 +76,7 @@ Item {
         PageHeader {
             Layout.fillWidth: true
             title: I18n.t("Import from channel")
-            subtitle: controller.projectName
+            subtitle: root.appController.projectName
 
             AppButton {
                 text: I18n.t("Back")
@@ -400,7 +401,7 @@ Item {
                         iconGlyph: "\uE896"
                         tone: "primary"
                         enabled: root.importer.selectedCount > 0 && !root.importer.busy
-                        onClicked: controller.startChannelDownloads()
+                        onClicked: root.appController.startChannelDownloads()
                     }
                 }
 
@@ -426,7 +427,7 @@ Item {
                         onSelectionChanged: function(selected) {
                             root.importer.setSelected(index, selected)
                         }
-                        onRetryRequested: controller.retryChannelVideo(index)
+                        onRetryRequested: root.appController.retryChannelVideo(index)
                     }
 
                     ScrollBar.vertical: ScrollBar {

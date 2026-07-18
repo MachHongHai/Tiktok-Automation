@@ -24,10 +24,10 @@ ApplicationWindow {
     property string currentRoute: routeSingleProjects
     property string workspaceReturnRoute: routeSingleProjects
     readonly property bool compactNavigation: width < 1280
-    readonly property bool modelStatusFailed: controller.statusMessage.toLowerCase().indexOf("unavailable") >= 0
-        || controller.statusMessage.toLowerCase().indexOf("failed") >= 0
+    readonly property bool modelStatusFailed: AppController.statusMessage.toLowerCase().indexOf("unavailable") >= 0
+        || AppController.statusMessage.toLowerCase().indexOf("failed") >= 0
     readonly property bool modelStatusBusy: !modelStatusFailed
-        && controller.statusMessage.toLowerCase().indexOf("ready") < 0
+        && AppController.statusMessage.toLowerCase().indexOf("ready") < 0
 
     function routeIndex(route) {
         switch (route) {
@@ -45,8 +45,8 @@ ApplicationWindow {
     }
 
     Component.onCompleted: {
-        Theme.darkMode = controller.settingsTheme === "dark"
-        I18n.language = controller.settingsLanguage
+        Theme.darkMode = AppController.settingsTheme === "dark"
+        I18n.language = AppController.settingsLanguage
     }
 
     Shortcut {
@@ -78,13 +78,13 @@ ApplicationWindow {
         onRequestEditAllSubtitles: {
             close()
             previewWindow.returnToBatchSetup = true
-            controller.openBatchSubtitleEditor()
+            AppController.openBatchSubtitleEditor()
         }
 
         onRequestEditSubtitleSize: function(sizeKey) {
             close()
             previewWindow.returnToBatchSetup = true
-            controller.openBatchSizeEditor(sizeKey)
+            AppController.openBatchSizeEditor(sizeKey)
         }
     }
 
@@ -93,13 +93,13 @@ ApplicationWindow {
     }
 
     Connections {
-        target: controller
+        target: AppController
 
         function onPreviewOpenRequested() {
             previewWindow.openFromController()
         }
 
-        function onJobDeleted() {
+        function onVideoDeleted() {
             root.navigate(root.workspaceReturnRoute)
         }
 
@@ -109,12 +109,12 @@ ApplicationWindow {
         }
 
         function onSettingsChanged() {
-            Theme.darkMode = controller.settingsTheme === "dark"
-            I18n.language = controller.settingsLanguage
+            Theme.darkMode = AppController.settingsTheme === "dark"
+            I18n.language = AppController.settingsLanguage
         }
 
         function onProjectPrepared() {
-            if (controller.projectType === "batch") {
+            if (AppController.projectType === "batch") {
                 root.workspaceReturnRoute = root.routeBatchProjects
                 root.navigate(root.routeBatchWorkspace)
             } else {
@@ -212,7 +212,7 @@ ApplicationWindow {
                     selected: root.currentRoute === root.routeSingleProjects
                         || root.currentRoute === root.routeSingleWorkspace
                     onClicked: {
-                        controller.refreshJobs()
+                        AppController.refreshVideos()
                         root.navigate(root.routeSingleProjects)
                     }
                 }
@@ -227,7 +227,7 @@ ApplicationWindow {
                         || root.currentRoute === root.routeBatchVideo
                         || root.currentRoute === root.routeChannelImport
                     onClicked: {
-                        controller.refreshJobs()
+                        AppController.refreshVideos()
                         root.navigate(root.routeBatchProjects)
                     }
                 }
@@ -263,7 +263,7 @@ ApplicationWindow {
 
                     Text {
                         Layout.fillWidth: true
-                        text: I18n.runtimeStatus(controller.statusMessage)
+                        text: I18n.runtimeStatus(AppController.statusMessage)
                         color: Theme.textOnDarkMuted
                         font.pixelSize: Theme.label
                         textFormat: Text.PlainText
@@ -307,7 +307,7 @@ ApplicationWindow {
 
                 ProjectsPage {
                     projectType: "single"
-                    projectModel: controller.singleProjectModel
+                    projectModel: AppController.singleProjectModel
                     Layout.fillWidth: true
                     Layout.fillHeight: true
                     Layout.leftMargin: root.width < 1400 ? 22 : 30
@@ -324,7 +324,7 @@ ApplicationWindow {
                     }
                 }
 
-                CreateJobPage {
+                CreateVideoPage {
                     Layout.fillWidth: true
                     Layout.fillHeight: true
                     Layout.leftMargin: root.width < 1400 ? 18 : 26
@@ -338,7 +338,7 @@ ApplicationWindow {
 
                 ProjectsPage {
                     projectType: "batch"
-                    projectModel: controller.batchProjectModel
+                    projectModel: AppController.batchProjectModel
                     Layout.fillWidth: true
                     Layout.fillHeight: true
                     Layout.leftMargin: root.width < 1400 ? 22 : 30
@@ -366,16 +366,16 @@ ApplicationWindow {
                     onRequestBatchSettings: batchSettingsDialog.open()
                     onRequestUrlImport: urlImportDialog.openForMode("batch")
                     onRequestChannelImport: {
-                        if (controller.prepareChannelImport())
+                        if (AppController.prepareChannelImport())
                             root.navigate(root.routeChannelImport)
                     }
-                    onOpenJobDetail: {
+                    onOpenVideoDetail: {
                         root.workspaceReturnRoute = root.routeBatchWorkspace
                         root.navigate(root.routeBatchVideo)
                     }
                 }
 
-                CreateJobPage {
+                CreateVideoPage {
                     Layout.fillWidth: true
                     Layout.fillHeight: true
                     Layout.leftMargin: root.width < 1400 ? 18 : 26
@@ -398,7 +398,9 @@ ApplicationWindow {
                     Layout.bottomMargin: 24
                     active: root.currentRoute === root.routeChannelImport
                     asynchronous: true
-                    source: "ChannelImportPage.qml"
+                    sourceComponent: ChannelImportPage {
+                        appController: AppController
+                    }
 
                     Connections {
                         target: channelImportLoader.item

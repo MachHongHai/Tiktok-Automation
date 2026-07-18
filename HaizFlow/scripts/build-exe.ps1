@@ -1,6 +1,7 @@
 param(
-  [switch]$IncludeCpuModel,
-  [switch]$IncludeGpuModel,
+  [switch]$SkipCpuModel,
+  [switch]$SkipGpuModel,
+  [switch]$SkipWhisperModel,
   [switch]$SkipFrozenSmokeTest
 )
 
@@ -12,6 +13,9 @@ $ArtifactPath = [System.IO.Path]::GetFullPath((Join-Path $DistRoot "HaizFlow"))
 $CompliancePath = [System.IO.Path]::GetFullPath((Join-Path $Root "build\release-compliance"))
 $FfmpegCompliancePath = [System.IO.Path]::GetFullPath((Join-Path $Root "runtime\compliance\ffmpeg"))
 $FfmpegManifestPath = [System.IO.Path]::GetFullPath((Join-Path $Root "runtime\ffmpeg-manifest.json"))
+$IncludeCpuModel = !$SkipCpuModel
+$IncludeGpuModel = !$SkipGpuModel
+$IncludeWhisperModel = !$SkipWhisperModel
 
 function Invoke-PythonChecked {
   param([string[]]$Arguments, [string]$Label)
@@ -110,6 +114,18 @@ $ArgsList += @("--collect-all", "yt_dlp")
 $ArgsList += @("--hidden-import", "haizflow.services.douyin_channel_worker")
 $ArgsList += @("--hidden-import", "haizflow.vendor.douyin_xbogus")
 
+if ($IncludeWhisperModel) {
+  $SourcePath = Join-Path $Root "src"
+  $ModelPath = & $Python -c "import sys; sys.path.insert(0, r'$SourcePath'); from haizflow.config import MODELS_DIR; from pathlib import Path; print(Path(MODELS_DIR) / 'whisper' / 'small')"
+  if (!(Test-Path -LiteralPath (Join-Path $ModelPath "model.bin") -PathType Leaf)) {
+    throw "Whisper model is missing. Run: .venv\Scripts\python.exe scripts\prepare-whisper-model.py"
+  }
+  Invoke-PythonChecked -Arguments @(
+    "-c", "import sys; sys.path.insert(0, r'$SourcePath'); from pathlib import Path; from haizflow.core.model_integrity import verify_whisper_model; verify_whisper_model(Path(r'$ModelPath'))"
+  ) -Label "Pinned Whisper model integrity"
+  $ArgsList += @("--add-data", "$ModelPath;models\whisper\small")
+}
+
 if ($IncludeCpuModel) {
   $SourcePath = Join-Path $Root "src"
   $ModelPath = & $Python -c "import sys; sys.path.insert(0, r'$SourcePath'); from haizflow.config import HYMT2_CPU_MODEL_FILE, MODELS_DIR; from pathlib import Path; print(Path(MODELS_DIR) / 'hymt2-gguf' / HYMT2_CPU_MODEL_FILE)"
@@ -165,6 +181,9 @@ if ($IncludeCpuModel) {
 if ($IncludeGpuModel) {
   $FinalizeArguments += "--gpu-model"
 }
+if ($IncludeWhisperModel) {
+  $FinalizeArguments += "--whisper-model"
+}
 Invoke-PythonChecked -Arguments $FinalizeArguments -Label "Release manifest generation"
 
 if (!$SkipFrozenSmokeTest) {
@@ -174,6 +193,9 @@ if (!$SkipFrozenSmokeTest) {
   }
   if ($IncludeGpuModel) {
     $SmokeArguments.RequireGpuModel = $true
+  }
+  if ($IncludeWhisperModel) {
+    $SmokeArguments.RequireWhisperModel = $true
   }
   $GpuAvailable = (& $Python -c "import torch; print('1' if torch.cuda.is_available() else '0')") -eq "1"
   if ($GpuAvailable) {

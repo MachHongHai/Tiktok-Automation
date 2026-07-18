@@ -9,8 +9,8 @@ import uuid
 import edge_tts
 
 from haizflow.config import TTS_MAX_CONCURRENCY
-from haizflow.pipeline.job_manager import check_cancellation, is_cancelled
-from haizflow.services.job_store import log_to_job
+from haizflow.pipeline.process_registry import check_cancellation, is_cancelled
+from haizflow.services.video_store import log_to_video
 
 
 _INITIAL_RETRIES = 3
@@ -70,7 +70,7 @@ def _is_valid_mp3(path: str) -> bool:
 
 
 def _tts_error_code(error: Exception) -> str:
-    """Return a stable diagnostic label for the user-facing job log."""
+    """Return a stable diagnostic label for the user-facing video log."""
     error_type = type(error).__name__.lower()
     message = str(error).lower()
     if "noaudioreceived" in error_type or "no audio was received" in message:
@@ -95,7 +95,7 @@ def _tts_error_detail(error: Exception, limit: int = 180) -> str:
 
 
 def _tts_text_preview(text: str, limit: int = 220) -> str:
-    """Keep the active sentence visible without allowing it to break the job log."""
+    """Keep the active sentence visible without allowing it to break the video log."""
     preview = " ".join(str(text or "").split())
     preview = _ANSI_ESCAPE.sub("", preview).replace('"', "'")
     if len(preview) > limit:
@@ -103,27 +103,27 @@ def _tts_text_preview(text: str, limit: int = 220) -> str:
     return f'"{preview or "<empty>"}"'
 
 
-async def _sleep_with_cancellation(delay: float, job_id: str | None) -> None:
+async def _sleep_with_cancellation(delay: float, video_id: str | None) -> None:
     deadline = asyncio.get_running_loop().time() + max(0.0, delay)
     while True:
-        if job_id:
-            check_cancellation(job_id)
+        if video_id:
+            check_cancellation(video_id)
         remaining = deadline - asyncio.get_running_loop().time()
         if remaining <= 0:
             return
         await asyncio.sleep(min(0.25, remaining))
 
 
-async def _save_with_cancellation(communicate, path: str, job_id: str | None) -> None:
+async def _save_with_cancellation(communicate, path: str, video_id: str | None) -> None:
     task = asyncio.create_task(communicate.save(path))
     try:
         while not task.done():
             await asyncio.wait({task}, timeout=0.25)
-            if job_id and is_cancelled(job_id):
+            if video_id and is_cancelled(video_id):
                 task.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
                     await task
-                check_cancellation(job_id)
+                check_cancellation(video_id)
         await task
     except BaseException:
         if not task.done():
@@ -139,7 +139,7 @@ async def tts_segment_with_retry(
     output_path: str,
     retries: int = _INITIAL_RETRIES,
     *,
-    job_id: str | None = None,
+    video_id: str | None = None,
     base_delay: float = 1.5,
     retry_callback=None,
 ) -> int:
@@ -152,8 +152,8 @@ async def tts_segment_with_retry(
     last_error = None
     stagger = (sum(processed_text.encode("utf-8")) % 7) * 0.15
     for attempt in range(1, max(1, retries) + 1):
-        if job_id:
-            check_cancellation(job_id)
+        if video_id:
+            check_cancellation(video_id)
         temporary_path = f"{output_path}.part-{uuid.uuid4().hex}"
         try:
             communicate = edge_tts.Communicate(
@@ -162,7 +162,7 @@ async def tts_segment_with_retry(
                 connect_timeout=15,
                 receive_timeout=60,
             )
-            await _save_with_cancellation(communicate, temporary_path, job_id)
+            await _save_with_cancellation(communicate, temporary_path, video_id)
             if not _is_valid_mp3(temporary_path):
                 raise RuntimeError("Edge TTS returned an empty or invalid MP3 stream.")
             os.replace(temporary_path, output_path)
@@ -172,15 +172,15 @@ async def tts_segment_with_retry(
             raise
         except Exception as exc:
             _remove_file(temporary_path)
-            if job_id and is_cancelled(job_id):
-                check_cancellation(job_id)
+            if video_id and is_cancelled(video_id):
+                check_cancellation(video_id)
             last_error = exc
             if attempt >= retries:
                 break
             delay = min(12.0, base_delay * (2 ** (attempt - 1)) + stagger)
             if retry_callback:
                 retry_callback(attempt, retries, exc, delay)
-            await _sleep_with_cancellation(delay, job_id)
+            await _sleep_with_cancellation(delay, video_id)
     raise RuntimeError(
         f"Edge TTS produced no valid audio after {max(1, retries)} attempts: {last_error}"
     ) from last_error
@@ -205,13 +205,13 @@ def generate_voice_parts(
     segments_json_path: str,
     voice_parts_dir: str,
     voice: str,
-    job_id: str,
+    video_id: str,
     progress_callback=None,
 ):
     """Generate every segment, recovering transient online failures without silence."""
     request_mode = "sequential" if TTS_MAX_CONCURRENCY == 1 else "controlled_parallel"
-    log_to_job(
-        job_id,
+    log_to_video(
+        video_id,
         f"[TTS][SESSION_START] voice={voice} mode={request_mode} "
         f"max_concurrency={TTS_MAX_CONCURRENCY}",
     )
@@ -229,8 +229,8 @@ def generate_voice_parts(
             nonlocal completed
             completed += 1
             status = "REUSED" if reused else "COMPLETE"
-            log_to_job(
-                job_id,
+            log_to_video(
+                video_id,
                 f"[TTS][{status}] segment={index}/{total} overall={completed}/{total} "
                 f"phase={phase} attempts={attempts}",
             )
@@ -241,8 +241,8 @@ def generate_voice_parts(
             def report(attempt, retries, error, delay):
                 error_code = _tts_error_code(error)
                 error_detail = _tts_error_detail(error)
-                log_to_job(
-                    job_id,
+                log_to_video(
+                    video_id,
                     f"[TTS][RETRY] segment={index}/{total} phase={phase} attempt={attempt}/{retries} "
                     f"error={error_code} retry_in={delay:.1f}s text={_tts_text_preview(text)} "
                     f"detail={error_detail}",
@@ -257,16 +257,16 @@ def generate_voice_parts(
                 report_completed(index, phase="checkpoint", attempts=0, reused=True)
                 return
             _remove_file(part_path)
-            check_cancellation(job_id)
-            log_to_job(
-                job_id,
+            check_cancellation(video_id)
+            log_to_video(
+                video_id,
                 f"[TTS][QUEUED] segment={index}/{total} characters={len(text)} "
                 f"text={_tts_text_preview(text)}",
             )
             async with limiter:
                 try:
-                    log_to_job(
-                        job_id,
+                    log_to_video(
+                        video_id,
                         f"[TTS][START] segment={index}/{total} phase=primary voice={voice} "
                         f"characters={len(text)} text={_tts_text_preview(text)} "
                         f"output={os.path.basename(part_path)}",
@@ -276,15 +276,15 @@ def generate_voice_parts(
                         voice,
                         part_path,
                         _INITIAL_RETRIES,
-                        job_id=job_id,
+                        video_id=video_id,
                         retry_callback=retry_logger(index, "primary", text),
                     )
                 except Exception as exc:
-                    if is_cancelled(job_id):
-                        check_cancellation(job_id)
+                    if is_cancelled(video_id):
+                        check_cancellation(video_id)
                     transient_failures.append((index, text, part_path, exc))
-                    log_to_job(
-                        job_id,
+                    log_to_video(
+                        video_id,
                         f"[TTS][RECOVERY_QUEUED] segment={index}/{total} "
                         f"error={_tts_error_code(exc)} text={_tts_text_preview(text)} "
                         f"detail={_tts_error_detail(exc)}",
@@ -303,15 +303,15 @@ def generate_voice_parts(
         permanent_failures = []
         if transient_failures:
             transient_failures.sort(key=lambda item: item[0])
-            log_to_job(
-                job_id,
+            log_to_video(
+                video_id,
                 f"Recovering {len(transient_failures)} TTS segment(s) sequentially with fresh connections.",
             )
-            await _sleep_with_cancellation(2.0, job_id)
+            await _sleep_with_cancellation(2.0, video_id)
             for index, text, part_path, initial_error in transient_failures:
-                check_cancellation(job_id)
-                log_to_job(
-                    job_id,
+                check_cancellation(video_id)
+                log_to_video(
+                    video_id,
                     f"[TTS][RECOVERY_START] segment={index}/{total} error={_tts_error_code(initial_error)} "
                     f"characters={len(text)} text={_tts_text_preview(text)}",
                 )
@@ -321,17 +321,17 @@ def generate_voice_parts(
                         voice,
                         part_path,
                         _RECOVERY_RETRIES,
-                        job_id=job_id,
+                        video_id=video_id,
                         base_delay=2.5,
                         retry_callback=retry_logger(index, "recovery", text),
                     )
                 except Exception as exc:
-                    if is_cancelled(job_id):
-                        check_cancellation(job_id)
+                    if is_cancelled(video_id):
+                        check_cancellation(video_id)
                     permanent_failures.append((index, initial_error, exc))
                     _remove_file(part_path)
-                    log_to_job(
-                        job_id,
+                    log_to_video(
+                        video_id,
                         f"[TTS][FAILED] segment={index}/{total} phase=recovery "
                         f"error={_tts_error_code(exc)} text={_tts_text_preview(text)} "
                         f"detail={_tts_error_detail(exc)}",
@@ -355,15 +355,15 @@ def generate_voice_parts(
             raise RuntimeError(f"TTS completion mismatch: verified {completed} of {total} segments.")
 
     _run_coroutine(run_all())
-    log_to_job(job_id, "All segment voices were generated and verified successfully.")
+    log_to_video(video_id, "All segment voices were generated and verified successfully.")
 
 
-def generate_single_voice(text: str, output_path: str, voice: str, job_id: str):
+def generate_single_voice(text: str, output_path: str, voice: str, video_id: str):
     """Create and verify a complete narration file."""
-    log_to_job(job_id, f"Generating single narration voice file with '{voice}'.")
+    log_to_video(video_id, f"Generating single narration voice file with '{voice}'.")
 
     async def run_single():
-        await tts_segment_with_retry(text, voice, output_path, job_id=job_id)
+        await tts_segment_with_retry(text, voice, output_path, video_id=video_id)
 
     _run_coroutine(run_single())
-    log_to_job(job_id, f"Successfully created narration file: {output_path}")
+    log_to_video(video_id, f"Successfully created narration file: {output_path}")

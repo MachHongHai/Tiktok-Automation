@@ -97,8 +97,8 @@ ApplicationWindow {{
             self.app.processEvents()
 
     def test_batch_video_menu_does_not_offer_project_deletion(self):
-        command_bar = (QML_DIR / "JobCommandBar.qml").read_text(encoding="utf-8")
-        self.assertIn("visible: root.hasProject && !controller.isSelectedBatchJob", command_bar)
+        command_bar = (QML_DIR / "VideoCommandBar.qml").read_text(encoding="utf-8")
+        self.assertIn("visible: root.hasProject && !AppController.isSelectedBatchVideo", command_bar)
 
 
 if __name__ == "__main__":

@@ -1,10 +1,10 @@
 import subprocess
-from haizflow.services.job_store import log_to_job
-from haizflow.pipeline.job_manager import register_process, unregister_process, check_cancellation
+from haizflow.services.video_store import log_to_video
+from haizflow.pipeline.process_registry import register_process, unregister_process, check_cancellation
 
-def extract_audio(video_path: str, output_wav_path: str, job_id: str):
+def extract_audio(video_path: str, output_wav_path: str, video_id: str):
     """Extracts audio from video to a 16kHz mono WAV file."""
-    log_to_job(job_id, f"Extracting audio from: {video_path}")
+    log_to_video(video_id, f"Extracting audio from: {video_path}")
     
     cmd = [
         "ffmpeg", "-y",
@@ -15,18 +15,18 @@ def extract_audio(video_path: str, output_wav_path: str, job_id: str):
         output_wav_path
     ]
     
-    check_cancellation(job_id)
+    check_cancellation(video_id)
     
     p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-    register_process(job_id, p)
+    register_process(video_id, p)
     stdout, stderr = p.communicate()
-    unregister_process(job_id, p)
+    unregister_process(video_id, p)
     
-    check_cancellation(job_id)
+    check_cancellation(video_id)
     
     if p.returncode != 0:
-        log_to_job(job_id, f"FFmpeg Error output:\n{stderr}")
+        log_to_video(video_id, f"FFmpeg Error output:\n{stderr}")
         raise RuntimeError(f"FFmpeg extraction failed with exit code {p.returncode}")
         
-    log_to_job(job_id, f"Successfully extracted audio to: {output_wav_path}")
+    log_to_video(video_id, f"Successfully extracted audio to: {output_wav_path}")
 

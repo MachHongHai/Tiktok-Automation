@@ -8,7 +8,7 @@ Rectangle {
     required property int index
     required property string projectName
     required property string projectType
-    required property int jobCount
+    required property int videoCount
     required property string status
     required property int progress
     required property string thumbnailSource
@@ -68,6 +68,7 @@ Rectangle {
             clip: true
 
             Image {
+                id: thumbnailImage
                 anchors.fill: parent
                 source: root.thumbnailSource
                 sourceSize.width: Math.round(root.width * 2)
@@ -81,26 +82,9 @@ Rectangle {
                 }
             }
 
-            Column {
-                anchors.centerIn: parent
-                spacing: Theme.space8
-                visible: root.thumbnailSource.length === 0
-
-                AppIcon {
-                    anchors.horizontalCenter: parent.horizontalCenter
-                    width: 28
-                    height: 28
-                    glyph: "\uE714"
-                    iconColor: Theme.textSubtle
-                    iconSize: Theme.iconLarge
-                }
-
-                Text {
-                    text: I18n.t("No preview")
-                    color: Theme.textSubtle
-                    font.pixelSize: Theme.caption
-                    textFormat: Text.PlainText
-                }
+            ThumbnailFallback {
+                anchors.fill: parent
+                visible: root.thumbnailSource.length === 0 || thumbnailImage.status === Image.Error
             }
 
             Rectangle {
@@ -116,7 +100,7 @@ Rectangle {
                 Text {
                     id: batchLabel
                     anchors.centerIn: parent
-                    text: qsTr("%1 %2").arg(root.jobCount).arg(I18n.t("videos"))
+                    text: qsTr("%1 %2").arg(root.videoCount).arg(I18n.t("videos"))
                     color: Theme.text
                     font.pixelSize: Theme.label
                     font.weight: Font.DemiBold
@@ -176,7 +160,7 @@ Rectangle {
                 Text {
                     Layout.fillWidth: true
                     text: root.projectType === "batch"
-                        ? qsTr("%1 - %2").arg(root.jobCount).arg(I18n.t("videos"))
+                        ? qsTr("%1 - %2").arg(root.videoCount).arg(I18n.t("videos"))
                         : root.statusLabel
                     color: Theme.textMuted
                     font.pixelSize: Theme.caption

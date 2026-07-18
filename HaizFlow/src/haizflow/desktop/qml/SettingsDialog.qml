@@ -20,37 +20,58 @@ Dialog {
     header: null
     footer: null
 
-    property string draftTheme: controller.settingsTheme
-    property string draftLanguage: controller.settingsLanguage
-    property string draftDevice: controller.processingDevice
-    readonly property var hardwareInfo: controller.hardwareInfo
+    property string draftTheme: AppController.settingsTheme
+    property string draftLanguage: AppController.settingsLanguage
+    property string draftDevice: AppController.processingDevice
+    readonly property var hardwareInfo: AppController.hardwareInfo
 
     onOpened: {
-        draftTheme = controller.settingsTheme
-        draftLanguage = controller.settingsLanguage
-        draftDevice = controller.processingDevice
+        draftTheme = AppController.settingsTheme
+        draftLanguage = AppController.settingsLanguage
+        draftDevice = AppController.processingDevice
     }
 
     Connections {
-        target: controller
+        target: AppController
 
         function onSettingsChanged() {
-            root.draftTheme = controller.settingsTheme
-            root.draftLanguage = controller.settingsLanguage
-            root.draftDevice = controller.processingDevice
+            root.draftTheme = AppController.settingsTheme
+            root.draftLanguage = AppController.settingsLanguage
+            root.draftDevice = AppController.processingDevice
         }
     }
 
     enter: Transition {
         ParallelAnimation {
-            NumberAnimation { property: "opacity"; from: 0; to: 1; duration: Theme.motionStandard }
-            NumberAnimation { property: "scale"; from: 0.98; to: 1; duration: Theme.motionStandard; easing.type: Easing.OutCubic }
+            NumberAnimation {
+                property: "opacity"
+                from: 0
+                to: 1
+                duration: Theme.motionStandard
+            }
+            NumberAnimation {
+                property: "scale"
+                from: 0.98
+                to: 1
+                duration: Theme.motionStandard
+                easing.type: Easing.OutCubic
+            }
         }
     }
     exit: Transition {
         ParallelAnimation {
-            NumberAnimation { property: "opacity"; from: 1; to: 0; duration: Theme.motionFast }
-            NumberAnimation { property: "scale"; from: 1; to: 0.99; duration: Theme.motionFast }
+            NumberAnimation {
+                property: "opacity"
+                from: 1
+                to: 0
+                duration: Theme.motionFast
+            }
+            NumberAnimation {
+                property: "scale"
+                from: 1
+                to: 0.99
+                duration: Theme.motionFast
+            }
         }
     }
 
@@ -106,105 +127,23 @@ Dialog {
             color: Theme.divider
         }
 
-        ColumnLayout {
+        ScrollView {
+            id: settingsScroll
+
             Layout.fillWidth: true
             Layout.fillHeight: true
-            Layout.margins: Theme.space24
-            spacing: Theme.space20
-
-            RowLayout {
-                Layout.fillWidth: true
-                spacing: Theme.space24
-
-                ColumnLayout {
-                    Layout.fillWidth: true
-                    spacing: 3
-
-                    Text {
-                        Layout.fillWidth: true
-                        text: I18n.t("Theme")
-                        color: Theme.text
-                        font.pixelSize: Theme.body
-                        font.weight: Font.DemiBold
-                        textFormat: Text.PlainText
-                    }
-
-                    Text {
-                        Layout.fillWidth: true
-                        text: I18n.t("Choose the application appearance")
-                        color: Theme.textMuted
-                        font.pixelSize: Theme.caption
-                        textFormat: Text.PlainText
-                    }
-                }
-
-                SegmentedControl {
-                    Layout.preferredWidth: 260
-                    currentValue: root.draftTheme
-                    options: [
-                        { "label": I18n.t("Dark"), "value": "dark" },
-                        { "label": I18n.t("Light"), "value": "light" }
-                    ]
-                    onActivated: function(value) {
-                        root.draftTheme = value
-                    }
-                }
-            }
-
-            Rectangle {
-                Layout.fillWidth: true
-                Layout.preferredHeight: 1
-                color: Theme.divider
-            }
-
-            RowLayout {
-                Layout.fillWidth: true
-                spacing: Theme.space24
-
-                ColumnLayout {
-                    Layout.fillWidth: true
-                    spacing: 3
-
-                    Text {
-                        Layout.fillWidth: true
-                        text: I18n.t("Language")
-                        color: Theme.text
-                        font.pixelSize: Theme.body
-                        font.weight: Font.DemiBold
-                        textFormat: Text.PlainText
-                    }
-
-                    Text {
-                        Layout.fillWidth: true
-                        text: I18n.t("Choose the interface language")
-                        color: Theme.textMuted
-                        font.pixelSize: Theme.caption
-                        textFormat: Text.PlainText
-                    }
-                }
-
-                SegmentedControl {
-                    Layout.preferredWidth: 260
-                    currentValue: root.draftLanguage
-                    options: [
-                        { "label": I18n.t("English"), "value": "en" },
-                        { "label": I18n.t("Vietnamese"), "value": "vi" }
-                    ]
-                    onActivated: function(value) {
-                        root.draftLanguage = value
-                    }
-                }
-            }
-
-            Rectangle {
-                Layout.fillWidth: true
-                Layout.preferredHeight: 1
-                color: Theme.divider
-            }
+            clip: true
+            leftPadding: Theme.space24
+            rightPadding: Theme.space24
+            topPadding: Theme.space24
+            bottomPadding: Theme.space24
+            contentWidth: availableWidth
+            ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
+            ScrollBar.vertical.policy: ScrollBar.AsNeeded
 
             ColumnLayout {
-                Layout.fillWidth: true
-                spacing: Theme.space8
+                width: settingsScroll.availableWidth
+                spacing: Theme.space20
 
                 RowLayout {
                     Layout.fillWidth: true
@@ -216,7 +155,7 @@ Dialog {
 
                         Text {
                             Layout.fillWidth: true
-                            text: I18n.t("Processing device")
+                            text: I18n.t("Theme")
                             color: Theme.text
                             font.pixelSize: Theme.body
                             font.weight: Font.DemiBold
@@ -225,198 +164,299 @@ Dialog {
 
                         Text {
                             Layout.fillWidth: true
-                            text: root.draftDevice === "gpu" ? I18n.t("GPU processing") : I18n.t("CPU processing")
+                            text: I18n.t("Choose the application appearance")
                             color: Theme.textMuted
                             font.pixelSize: Theme.caption
-                            elide: Text.ElideRight
                             textFormat: Text.PlainText
                         }
                     }
 
                     SegmentedControl {
                         Layout.preferredWidth: 260
-                        currentValue: root.draftDevice
+                        currentValue: root.draftTheme
                         options: [
-                            { "label": I18n.t("GPU"), "value": "gpu" },
-                            { "label": I18n.t("CPU"), "value": "cpu" }
+                            {
+                                "label": I18n.t("Dark"),
+                                "value": "dark"
+                            },
+                            {
+                                "label": I18n.t("Light"),
+                                "value": "light"
+                            }
                         ]
-                        onActivated: function(value) {
-                            root.draftDevice = value
+                        onActivated: function (value) {
+                            root.draftTheme = value
                         }
                     }
                 }
 
-                Text {
+                Rectangle {
                     Layout.fillWidth: true
-                    Layout.preferredHeight: visible ? implicitHeight : 0
-                    text: root.hardwareInfo
-                        ? controller.processingDeviceStatus(root.draftDevice)
-                        : ""
-                    visible: root.hardwareInfo && !controller.processingDeviceCompatible(root.draftDevice)
-                    color: root.hardwareInfo && controller.processingDeviceCompatible(root.draftDevice)
-                        ? Theme.textMuted
-                        : Theme.danger
-                    font.pixelSize: Theme.caption
-                    wrapMode: Text.Wrap
-                    textFormat: Text.PlainText
+                    Layout.preferredHeight: 1
+                    color: Theme.divider
                 }
 
-                Text {
+                RowLayout {
                     Layout.fillWidth: true
-                    text: I18n.t("Recommended") + ": " + (root.hardwareInfo.recommendedDevice === "gpu"
-                        ? I18n.t("GPU")
-                        : I18n.t("CPU"))
-                    color: root.hardwareInfo.recommendedDevice === "gpu" ? Theme.success : Theme.warning
-                    font.pixelSize: Theme.caption
-                    font.weight: Font.DemiBold
-                    textFormat: Text.PlainText
+                    spacing: Theme.space24
+
+                    ColumnLayout {
+                        Layout.fillWidth: true
+                        spacing: 3
+
+                        Text {
+                            Layout.fillWidth: true
+                            text: I18n.t("Language")
+                            color: Theme.text
+                            font.pixelSize: Theme.body
+                            font.weight: Font.DemiBold
+                            textFormat: Text.PlainText
+                        }
+
+                        Text {
+                            Layout.fillWidth: true
+                            text: I18n.t("Choose the interface language")
+                            color: Theme.textMuted
+                            font.pixelSize: Theme.caption
+                            textFormat: Text.PlainText
+                        }
+                    }
+
+                    SegmentedControl {
+                        Layout.preferredWidth: 260
+                        currentValue: root.draftLanguage
+                        options: [
+                            {
+                                "label": I18n.t("English"),
+                                "value": "en"
+                            },
+                            {
+                                "label": I18n.t("Vietnamese"),
+                                "value": "vi"
+                            }
+                        ]
+                        onActivated: function (value) {
+                            root.draftLanguage = value
+                        }
+                    }
                 }
 
-                Text {
+                Rectangle {
                     Layout.fillWidth: true
-                    text: I18n.t("GPU available") + ": " + (root.hardwareInfo.gpuSafe
-                        ? root.hardwareInfo.availableGpuName
-                        : I18n.t("No"))
-                    color: root.hardwareInfo.gpuSafe ? Theme.success : Theme.textMuted
-                    font.pixelSize: Theme.caption
-                    textFormat: Text.PlainText
+                    Layout.preferredHeight: 1
+                    color: Theme.divider
                 }
-            }
-
-            Rectangle {
-                Layout.fillWidth: true
-                Layout.preferredHeight: 206
-                radius: Theme.radiusSmall
-                color: Theme.surfaceElevated
-                border.width: 1
-                border.color: Theme.outline
 
                 ColumnLayout {
-                    anchors.fill: parent
-                    anchors.margins: Theme.space16
-                    spacing: Theme.space12
+                    Layout.fillWidth: true
+                    spacing: Theme.space8
+
+                    RowLayout {
+                        Layout.fillWidth: true
+                        spacing: Theme.space24
+
+                        ColumnLayout {
+                            Layout.fillWidth: true
+                            spacing: 3
+
+                            Text {
+                                Layout.fillWidth: true
+                                text: I18n.t("Processing device")
+                                color: Theme.text
+                                font.pixelSize: Theme.body
+                                font.weight: Font.DemiBold
+                                textFormat: Text.PlainText
+                            }
+
+                            Text {
+                                Layout.fillWidth: true
+                                text: root.draftDevice === "gpu" ? I18n.t("GPU processing") : I18n.t("CPU processing")
+                                color: Theme.textMuted
+                                font.pixelSize: Theme.caption
+                                elide: Text.ElideRight
+                                textFormat: Text.PlainText
+                            }
+                        }
+
+                        SegmentedControl {
+                            Layout.preferredWidth: 260
+                            currentValue: root.draftDevice
+                            options: [
+                                {
+                                    "label": I18n.t("GPU"),
+                                    "value": "gpu"
+                                },
+                                {
+                                    "label": I18n.t("CPU"),
+                                    "value": "cpu"
+                                }
+                            ]
+                            onActivated: function (value) {
+                                root.draftDevice = value
+                            }
+                        }
+                    }
 
                     Text {
                         Layout.fillWidth: true
-                        text: I18n.t("Current hardware")
-                        color: Theme.text
-                        font.pixelSize: Theme.body
+                        Layout.preferredHeight: visible ? implicitHeight : 0
+                        text: root.hardwareInfo ? AppController.processingDeviceStatus(root.draftDevice) : ""
+                        visible: root.hardwareInfo && !AppController.processingDeviceCompatible(root.draftDevice)
+                        color: root.hardwareInfo && AppController.processingDeviceCompatible(root.draftDevice) ? Theme.textMuted : Theme.danger
+                        font.pixelSize: Theme.caption
+                        wrapMode: Text.Wrap
+                        textFormat: Text.PlainText
+                    }
+
+                    Text {
+                        Layout.fillWidth: true
+                        text: I18n.t("Recommended") + ": " + (root.hardwareInfo.recommendedDevice === "gpu" ? I18n.t("GPU") : I18n.t("CPU"))
+                        color: root.hardwareInfo.recommendedDevice === "gpu" ? Theme.success : Theme.warning
+                        font.pixelSize: Theme.caption
                         font.weight: Font.DemiBold
                         textFormat: Text.PlainText
                     }
 
                     Text {
                         Layout.fillWidth: true
-                        text: I18n.t("Active GPU") + "  " + (root.hardwareInfo.activeGpuName || I18n.t("Not available"))
-                        color: Theme.textMuted
+                        text: I18n.t("GPU available") + ": " + (root.hardwareInfo.gpuSafe ? root.hardwareInfo.availableGpuName : I18n.t("No"))
+                        color: root.hardwareInfo.gpuSafe ? Theme.success : Theme.textMuted
                         font.pixelSize: Theme.caption
-                        elide: Text.ElideRight
                         textFormat: Text.PlainText
                     }
-
-                    Text {
-                        Layout.fillWidth: true
-                        text: I18n.t("CPU") + "  " + root.hardwareInfo.cpuName
-                        color: Theme.textMuted
-                        font.pixelSize: Theme.caption
-                        elide: Text.ElideRight
-                        textFormat: Text.PlainText
-                    }
-
-                    GridLayout {
-                        Layout.fillWidth: true
-                        columns: 2
-                        columnSpacing: Theme.space24
-                        rowSpacing: Theme.space8
-
-                        Text {
-                            text: I18n.t("Total VRAM") + "  " + root.hardwareInfo.totalVram
-                            color: Theme.textMuted
-                            font.pixelSize: Theme.caption
-                            textFormat: Text.PlainText
-                        }
-
-                        Text {
-                            text: I18n.t("Free VRAM") + "  " + root.hardwareInfo.freeVram
-                            color: Theme.textMuted
-                            font.pixelSize: Theme.caption
-                            textFormat: Text.PlainText
-                        }
-
-                        Text {
-                            text: I18n.t("System RAM") + "  " + root.hardwareInfo.systemRam
-                            color: Theme.textMuted
-                            font.pixelSize: Theme.caption
-                            textFormat: Text.PlainText
-                        }
-
-                        Text {
-                            text: I18n.t("CPU") + "  " + (root.hardwareInfo.cpuPhysicalCores || "--") + " " + I18n.t("cores")
-                                + " / " + root.hardwareInfo.logicalCpuCount + " " + I18n.t("threads")
-                            color: Theme.textMuted
-                            font.pixelSize: Theme.caption
-                            textFormat: Text.PlainText
-                        }
-
-                        Text {
-                            text: I18n.t("Power source") + "  " + (root.hardwareInfo.acPowered === true
-                                ? I18n.t("Plugged in")
-                                : root.hardwareInfo.acPowered === false
-                                    ? I18n.t("On battery") + (root.hardwareInfo.batteryPercent >= 0
-                                        ? " (" + root.hardwareInfo.batteryPercent + "%)"
-                                        : "")
-                                    : I18n.t("Unknown"))
-                            color: root.hardwareInfo.acPowered === false ? Theme.warning : Theme.textMuted
-                            font.pixelSize: Theme.caption
-                            textFormat: Text.PlainText
-                        }
-
-                        Text {
-                            text: I18n.t("CPU clock") + "  " + (root.hardwareInfo.cpuMaxMhz > 0
-                                ? (root.hardwareInfo.cpuMaxMhz / 1000).toFixed(1) + " GHz"
-                                : "--")
-                            color: Theme.textMuted
-                            font.pixelSize: Theme.caption
-                            textFormat: Text.PlainText
-                        }
-                    }
-
                 }
+
+                Rectangle {
+                    Layout.fillWidth: true
+                    Layout.preferredHeight: 206
+                    radius: Theme.radiusSmall
+                    color: Theme.surfaceElevated
+                    border.width: 1
+                    border.color: Theme.outline
+
+                    ColumnLayout {
+                        anchors.fill: parent
+                        anchors.margins: Theme.space16
+                        spacing: Theme.space12
+
+                        Text {
+                            Layout.fillWidth: true
+                            text: I18n.t("Current hardware")
+                            color: Theme.text
+                            font.pixelSize: Theme.body
+                            font.weight: Font.DemiBold
+                            textFormat: Text.PlainText
+                        }
+
+                        Text {
+                            Layout.fillWidth: true
+                            text: I18n.t("Active GPU") + "  " + (root.hardwareInfo.activeGpuName || I18n.t("Not available"))
+                            color: Theme.textMuted
+                            font.pixelSize: Theme.caption
+                            elide: Text.ElideRight
+                            textFormat: Text.PlainText
+                        }
+
+                        Text {
+                            Layout.fillWidth: true
+                            text: I18n.t("CPU") + "  " + root.hardwareInfo.cpuName
+                            color: Theme.textMuted
+                            font.pixelSize: Theme.caption
+                            elide: Text.ElideRight
+                            textFormat: Text.PlainText
+                        }
+
+                        GridLayout {
+                            Layout.fillWidth: true
+                            columns: 2
+                            columnSpacing: Theme.space24
+                            rowSpacing: Theme.space8
+
+                            Text {
+                                text: I18n.t("Total VRAM") + "  " + root.hardwareInfo.totalVram
+                                color: Theme.textMuted
+                                font.pixelSize: Theme.caption
+                                textFormat: Text.PlainText
+                            }
+
+                            Text {
+                                text: I18n.t("Free VRAM") + "  " + root.hardwareInfo.freeVram
+                                color: Theme.textMuted
+                                font.pixelSize: Theme.caption
+                                textFormat: Text.PlainText
+                            }
+
+                            Text {
+                                text: I18n.t("System RAM") + "  " + root.hardwareInfo.systemRam
+                                color: Theme.textMuted
+                                font.pixelSize: Theme.caption
+                                textFormat: Text.PlainText
+                            }
+
+                            Text {
+                                text: I18n.t("CPU") + "  " + (root.hardwareInfo.cpuPhysicalCores || "--") + " " + I18n.t("cores") + " / " + root.hardwareInfo.logicalCpuCount + " " + I18n.t("threads")
+                                color: Theme.textMuted
+                                font.pixelSize: Theme.caption
+                                textFormat: Text.PlainText
+                            }
+
+                            Text {
+                                text: I18n.t("Power source") + "  " + (root.hardwareInfo.acPowered === true ? I18n.t("Plugged in") : root.hardwareInfo.acPowered === false ? I18n.t("On battery") + (root.hardwareInfo.batteryPercent >= 0 ? " (" + root.hardwareInfo.batteryPercent + "%)" : "") : I18n.t("Unknown"))
+                                color: root.hardwareInfo.acPowered === false ? Theme.warning : Theme.textMuted
+                                font.pixelSize: Theme.caption
+                                textFormat: Text.PlainText
+                            }
+
+                            Text {
+                                text: I18n.t("CPU clock") + "  " + (root.hardwareInfo.cpuMaxMhz > 0 ? (root.hardwareInfo.cpuMaxMhz / 1000).toFixed(1) + " GHz" : "--")
+                                color: Theme.textMuted
+                                font.pixelSize: Theme.caption
+                                textFormat: Text.PlainText
+                            }
+                        }
+                    }
+                }
+
+            }
+        }
+
+        Rectangle {
+            Layout.fillWidth: true
+            Layout.preferredHeight: 1
+            color: Theme.divider
+        }
+
+        RowLayout {
+            Layout.fillWidth: true
+            Layout.preferredHeight: 74
+            Layout.leftMargin: Theme.space24
+            Layout.rightMargin: Theme.space24
+            spacing: Theme.space8
+
+            AppButton {
+                text: I18n.t("Reset defaults")
+                iconGlyph: "\uE777"
+                tone: "ghost"
+                onClicked: AppController.resetSettings()
             }
 
             Item {
-                Layout.fillHeight: true
+                Layout.fillWidth: true
             }
 
-            RowLayout {
-                Layout.fillWidth: true
-                spacing: Theme.space8
+            AppButton {
+                text: I18n.t("Cancel")
+                tone: "ghost"
+                onClicked: root.close()
+            }
 
-                AppButton {
-                    text: I18n.t("Reset defaults")
-                    iconGlyph: "\uE777"
-                    tone: "ghost"
-                    onClicked: controller.resetSettings()
-                }
-
-                Item { Layout.fillWidth: true }
-
-                AppButton {
-                    text: I18n.t("Cancel")
-                    tone: "ghost"
-                    onClicked: root.close()
-                }
-
-                AppButton {
-                    text: I18n.t("Apply settings")
-                    iconGlyph: "\uE73E"
-                    tone: "primary"
-                    enabled: (root.draftTheme !== controller.settingsTheme
-                        || root.draftLanguage !== controller.settingsLanguage
-                        || root.draftDevice !== controller.processingDevice)
-                    onClicked: {
-                        controller.applySettings(root.draftTheme, root.draftLanguage, root.draftDevice)
-                    }
+            AppButton {
+                text: I18n.t("Apply settings")
+                iconGlyph: "\uE73E"
+                tone: "primary"
+                enabled: (root.draftTheme !== AppController.settingsTheme || root.draftLanguage !== AppController.settingsLanguage || root.draftDevice !== AppController.processingDevice)
+                onClicked: {
+                    AppController.applySettings(root.draftTheme, root.draftLanguage, root.draftDevice)
                 }
             }
         }

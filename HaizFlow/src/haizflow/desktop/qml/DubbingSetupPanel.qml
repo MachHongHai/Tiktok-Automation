@@ -22,14 +22,14 @@ Panel {
 
         SegmentedControl {
             Layout.fillWidth: true
-            enabled: controller.canEditSelectedJob
-            currentValue: controller.workflowMode
+            enabled: AppController.canEditSelectedVideo
+            currentValue: AppController.workflowMode
             options: [
                 { "label": I18n.t("Full auto"), "value": "A" },
                 { "label": I18n.t("Review then dub"), "value": "review" }
             ]
             onActivated: function(value) {
-                controller.workflowMode = value
+                AppController.workflowMode = value
             }
         }
     }
@@ -49,11 +49,11 @@ Panel {
         SearchableLanguageCombo {
             Layout.fillWidth: true
             Layout.preferredHeight: 42
-            enabled: controller.canEditSelectedJob
-            options: controller.targetLanguageOptions
-            selectedCode: controller.targetLanguage
+            enabled: AppController.canEditSelectedVideo
+            options: AppController.targetLanguageOptions
+            selectedCode: AppController.targetLanguage
             onSelected: function(code) {
-                controller.targetLanguage = code
+                AppController.targetLanguage = code
             }
         }
     }
@@ -72,12 +72,12 @@ Panel {
 
         AppComboBox {
             Layout.fillWidth: true
-            enabled: controller.canEditSelectedJob
+            enabled: AppController.canEditSelectedVideo
             textRole: "label"
             valueRole: "voice"
-            model: controller.ttsVoiceOptions
-            currentIndex: controller.ttsVoiceIndex
-            onActivated: controller.ttsVoice = currentValue
+            model: AppController.ttsVoiceOptions
+            currentIndex: AppController.ttsVoiceIndex
+            onActivated: AppController.ttsVoice = currentValue
         }
     }
 
@@ -103,21 +103,21 @@ Panel {
 
         SegmentedControl {
             Layout.fillWidth: true
-            enabled: controller.canEditSelectedJob
-            currentValue: controller.enableAudioSeparation ? "separated" : "original"
+            enabled: AppController.canEditSelectedVideo
+            currentValue: AppController.enableAudioSeparation ? "separated" : "original"
             options: [
                 { "label": I18n.t("Keep original audio"), "value": "original" },
                 { "label": I18n.t("Separate vocals"), "value": "separated" }
             ]
             onActivated: function(value) {
-                controller.enableAudioSeparation = value === "separated"
+                AppController.enableAudioSeparation = value === "separated"
             }
         }
     }
 
     Text {
         Layout.fillWidth: true
-        visible: controller.cpuOnly && controller.enableAudioSeparation
+        visible: AppController.cpuOnly && AppController.enableAudioSeparation
         text: I18n.t("Audio separation is slower in CPU mode")
         color: Theme.warning
         font.pixelSize: Theme.caption
@@ -127,7 +127,7 @@ Panel {
 
     ColumnLayout {
         Layout.fillWidth: true
-        visible: !controller.enableAudioSeparation
+        visible: !AppController.enableAudioSeparation
         spacing: Theme.space8
 
         RowLayout {
@@ -143,7 +143,7 @@ Panel {
             }
 
             Text {
-                text: qsTr("%1%").arg(controller.originalVolume)
+                text: qsTr("%1%").arg(AppController.originalVolume)
                 color: Theme.text
                 font.pixelSize: Theme.caption
                 font.weight: Font.DemiBold
@@ -153,13 +153,13 @@ Panel {
 
         AppSlider {
             Layout.fillWidth: true
-            enabled: controller.canEditSelectedJob
+            enabled: AppController.canEditSelectedVideo
             from: 0
             to: 100
             stepSize: 1
-            value: controller.originalVolume
+            value: AppController.originalVolume
             Accessible.name: I18n.t("Original audio volume")
-            onMoved: controller.originalVolume = Math.round(value)
+            onMoved: AppController.originalVolume = Math.round(value)
         }
     }
 
@@ -170,21 +170,21 @@ Panel {
 
     AppButton {
         Layout.fillWidth: true
-        visible: controller.isSelectedBatchJob
+        visible: AppController.isSelectedBatchVideo
         text: I18n.t("Save video settings")
         iconGlyph: "\uE74E"
         tone: "primary"
-        enabled: controller.canEditSelectedJob
-        onClicked: controller.saveSelectedJobSettings()
+        enabled: AppController.canEditSelectedVideo
+        onClicked: AppController.saveSelectedVideoSettings()
     }
 
     AppButton {
         Layout.fillWidth: true
-        visible: !controller.hasSelectedJob
-        text: controller.isProcessing ? I18n.t("Add to processing queue") : I18n.t("Create and process")
+        visible: !AppController.hasSelectedVideo
+        text: AppController.isProcessing ? I18n.t("Add to processing queue") : I18n.t("Create and process")
         iconGlyph: "\uE768"
         tone: "primary"
-        enabled: controller.canEditSelectedJob && controller.videoPath.length > 0
-        onClicked: controller.startProjectJob()
+        enabled: AppController.canEditSelectedVideo && AppController.videoPath.length > 0
+        onClicked: AppController.startProjectVideo()
     }
 }

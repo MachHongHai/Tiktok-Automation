@@ -11,8 +11,6 @@ SRC = ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-from huggingface_hub import hf_hub_download  # noqa: E402
-
 from haizflow.config import (  # noqa: E402
     HYMT2_CPU_MODEL_FILE,
     HYMT2_CPU_MODEL_REPO,
@@ -20,6 +18,7 @@ from haizflow.config import (  # noqa: E402
     MODELS_DIR,
 )
 from haizflow.core.model_integrity import verify_cpu_model  # noqa: E402
+from huggingface_hub import hf_hub_download  # noqa: E402
 
 
 def main() -> int:

@@ -5,7 +5,7 @@ from unittest import mock
 
 from haizflow.pipeline.audio_timeline import _segment_slot_end_ms
 from haizflow.pipeline import render
-from haizflow.schemas.job import CropSettings, SubtitleStyle
+from haizflow.schemas.video import CropSettings, SubtitleStyle
 
 
 class TimelineRenderTests(unittest.TestCase):
@@ -49,7 +49,7 @@ class TimelineRenderTests(unittest.TestCase):
                 mock.patch.object(render, "register_process"),
                 mock.patch.object(render, "unregister_process"),
                 mock.patch.object(render, "check_cancellation"),
-                mock.patch.object(render, "log_to_job"),
+                mock.patch.object(render, "log_to_video"),
             ):
                 render.render_video(
                     str(root / "input.mp4"),
@@ -59,7 +59,7 @@ class TimelineRenderTests(unittest.TestCase):
                     "keep_ratio",
                     SubtitleStyle(),
                     CropSettings(),
-                    "job-id",
+                    "video-id",
                 )
 
         command = captured["command"]

@@ -76,6 +76,7 @@ Rectangle {
             clip: true
 
             Image {
+                id: thumbnailImage
                 anchors.fill: parent
                 source: root.thumbnailSource
                 sourceSize.width: 224
@@ -83,6 +84,12 @@ Rectangle {
                 asynchronous: true
                 cache: true
                 fillMode: Image.PreserveAspectCrop
+                visible: status === Image.Ready
+            }
+
+            ThumbnailFallback {
+                anchors.fill: parent
+                visible: root.thumbnailSource.length === 0 || thumbnailImage.status === Image.Error
             }
 
             Text {

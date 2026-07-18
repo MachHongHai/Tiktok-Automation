@@ -28,7 +28,7 @@ Dialog {
 
     onOpened: {
         changesApplied = false
-        controller.loadBatchSettings()
+        AppController.loadBatchSettings()
     }
 
     enter: Transition {
@@ -135,14 +135,14 @@ Dialog {
 
                     SegmentedControl {
                         Layout.fillWidth: true
-                        currentValue: controller.workflowMode
+                        currentValue: AppController.workflowMode
                         options: [
                             { "label": I18n.t("Full auto"), "value": "A" },
                             { "label": I18n.t("Review then dub"), "value": "review" }
                         ]
                         onActivated: function(value) {
                             root.changesApplied = false
-                            controller.workflowMode = value
+                            AppController.workflowMode = value
                         }
                     }
 
@@ -155,11 +155,11 @@ Dialog {
                     SearchableLanguageCombo {
                         Layout.fillWidth: true
                         Layout.preferredHeight: 42
-                        options: controller.targetLanguageOptions
-                        selectedCode: controller.targetLanguage
+                        options: AppController.targetLanguageOptions
+                        selectedCode: AppController.targetLanguage
                         onSelected: function(code) {
                             root.changesApplied = false
-                            controller.targetLanguage = code
+                            AppController.targetLanguage = code
                         }
                     }
 
@@ -173,11 +173,11 @@ Dialog {
                         Layout.fillWidth: true
                         textRole: "label"
                         valueRole: "voice"
-                        model: controller.ttsVoiceOptions
-                        currentIndex: controller.ttsVoiceIndex
+                        model: AppController.ttsVoiceOptions
+                        currentIndex: AppController.ttsVoiceIndex
                         onActivated: {
                             root.changesApplied = false
-                            controller.ttsVoice = currentValue
+                            AppController.ttsVoice = currentValue
                         }
                     }
 
@@ -196,19 +196,19 @@ Dialog {
 
                     SegmentedControl {
                         Layout.fillWidth: true
-                        currentValue: controller.enableAudioSeparation ? "separated" : "original"
+                        currentValue: AppController.enableAudioSeparation ? "separated" : "original"
                         options: [
                             { "label": I18n.t("Keep original audio"), "value": "original" },
                             { "label": I18n.t("Separate vocals"), "value": "separated" }
                         ]
                         onActivated: function(value) {
                             root.changesApplied = false
-                            controller.enableAudioSeparation = value === "separated"
+                            AppController.enableAudioSeparation = value === "separated"
                         }
                     }
 
                     Text {
-                        visible: !controller.enableAudioSeparation
+                        visible: !AppController.enableAudioSeparation
                         text: I18n.t("Original audio volume")
                         color: Theme.textMuted
                         font.pixelSize: Theme.caption
@@ -216,7 +216,7 @@ Dialog {
 
                     RowLayout {
                         Layout.fillWidth: true
-                        visible: !controller.enableAudioSeparation
+                        visible: !AppController.enableAudioSeparation
                         spacing: Theme.space12
 
                         AppSlider {
@@ -224,16 +224,16 @@ Dialog {
                             from: 0
                             to: 100
                             stepSize: 1
-                            value: controller.originalVolume
+                            value: AppController.originalVolume
                             onMoved: {
                                 root.changesApplied = false
-                                controller.originalVolume = Math.round(value)
+                                AppController.originalVolume = Math.round(value)
                             }
                         }
 
                         Text {
                             Layout.preferredWidth: 44
-                            text: qsTr("%1%").arg(controller.originalVolume)
+                            text: qsTr("%1%").arg(AppController.originalVolume)
                             color: Theme.text
                             horizontalAlignment: Text.AlignRight
                             font.pixelSize: Theme.caption
@@ -283,13 +283,13 @@ Dialog {
                         AppButton {
                             text: I18n.t("Edit all subtitles")
                             iconGlyph: "\uE70F"
-                            enabled: controller.batchCount > 0 && !controller.isBatchRunning
+                            enabled: AppController.batchCount > 0 && !AppController.isBatchRunning
                             onClicked: root.requestEditAllSubtitles()
                         }
                     }
 
                     Repeater {
-                        model: controller.batchVideoSizeGroups
+                        model: AppController.batchVideoSizeGroups
 
                         delegate: Rectangle {
                             id: sizePreset
@@ -343,7 +343,7 @@ Dialog {
                                     text: I18n.t("Edit")
                                     iconGlyph: "\uE70F"
                                     compact: true
-                                    enabled: !controller.isBatchRunning
+                                    enabled: !AppController.isBatchRunning
                                     onClicked: root.requestEditSubtitleSize(sizePreset.modelData.sizeKey)
                                 }
                             }
@@ -368,7 +368,7 @@ Dialog {
 
             Text {
                 Layout.fillWidth: true
-                text: qsTr("%1 %2").arg(controller.batchCount).arg(I18n.t("videos"))
+                text: qsTr("%1 %2").arg(AppController.batchCount).arg(I18n.t("videos"))
                 color: Theme.textMuted
                 font.pixelSize: Theme.caption
             }
@@ -383,9 +383,9 @@ Dialog {
                 text: I18n.t("Apply to all videos")
                 iconGlyph: "\uE73E"
                 tone: "primary"
-                enabled: controller.batchCount > 0 && !root.changesApplied
+                enabled: AppController.batchCount > 0 && !root.changesApplied
                 onClicked: {
-                    if (controller.applyBatchSettings())
+                    if (AppController.applyBatchSettings())
                         root.changesApplied = true
                 }
             }

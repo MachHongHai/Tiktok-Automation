@@ -2,8 +2,8 @@ import os
 import shutil
 import uuid
 
-from haizflow.schemas.job import JobConfig, MediaSource
-from haizflow.services import job_store, project_store
+from haizflow.schemas.video import VideoConfig, MediaSource
+from haizflow.services import video_store, project_store
 from haizflow.utils.ffmpeg import get_video_dimensions
 
 
@@ -14,30 +14,30 @@ def _same_path(first: str, second: str) -> bool:
     return os.path.normcase(os.path.abspath(first)) == os.path.normcase(os.path.abspath(second))
 
 
-def migrate_legacy_single_export(job_info) -> bool:
+def migrate_legacy_single_export(video_info) -> bool:
     """Move a legacy single-project export out of the project root once."""
     if (
-        not job_info
-        or job_info.project_type == "batch"
-        or not job_info.project_name
-        or not job_info.project_directory
+        not video_info
+        or video_info.project_type == "batch"
+        or not video_info.project_name
+        or not video_info.project_directory
     ):
         return False
 
     project_root = (
-        project_store.project_root_for_key(job_info.project_key)
-        if job_info.project_key
-        else project_store.project_root(job_info.project_name, job_info.project_directory, job_info.project_type)
+        project_store.project_root_for_key(video_info.project_key)
+        if video_info.project_key
+        else project_store.project_root(video_info.project_name, video_info.project_directory, video_info.project_type)
     )
     legacy_export = os.path.join(project_root, "dubbed_video.mp4")
-    current_export = (job_info.files or {}).get("final_video") or ""
+    current_export = (video_info.files or {}).get("final_video") or ""
     if not current_export or not _same_path(current_export, legacy_export):
         return False
 
     export_directory = (
-        project_store.project_exports_dir_for_key(job_info.project_key)
-        if job_info.project_key
-        else project_store.project_exports_dir(job_info.project_name, job_info.project_directory, job_info.project_type)
+        project_store.project_exports_dir_for_key(video_info.project_key)
+        if video_info.project_key
+        else project_store.project_exports_dir(video_info.project_name, video_info.project_directory, video_info.project_type)
     )
     migrated_export = os.path.join(export_directory, "dubbed_video.mp4")
     os.makedirs(export_directory, exist_ok=True)
@@ -45,15 +45,15 @@ def migrate_legacy_single_export(job_info) -> bool:
         os.replace(legacy_export, migrated_export)
 
     if os.path.exists(migrated_export):
-        job_info.files["final_video"] = migrated_export
-        job_store.save_job(job_info)
+        video_info.files["final_video"] = migrated_export
+        video_store.save_video(video_info)
         return True
     return False
 
 
-def create_desktop_job(
+def create_desktop_video(
     video_path: str,
-    config: JobConfig,
+    config: VideoConfig,
     project_name: str = "",
     project_directory: str = "",
     media_source: MediaSource | dict | None = None,
@@ -73,7 +73,7 @@ def create_desktop_job(
     if project_directory and not project_name:
         raise ValueError("Enter a project name before choosing an output folder.")
 
-    job_id = str(uuid.uuid4())
+    video_id = str(uuid.uuid4())
     if project_directory:
         config.project_name = project_name
         config.project_directory = os.path.abspath(project_directory)
@@ -85,31 +85,31 @@ def create_desktop_job(
         )
         config.project_id = str(project["project_id"])
         config.project_key = str(project["key"])
-    job_info = job_store.create_job(job_id, os.path.basename(video_path), config, video_ext=ext)
+    video_info = video_store.create_video(video_id, os.path.basename(video_path), config, video_ext=ext)
     try:
-        job_info.media_source = MediaSource.model_validate(media_source or {"type": "local_file"})
-        input_path = job_info.files["video_input"]
+        video_info.media_source = MediaSource.model_validate(media_source or {"type": "local_file"})
+        input_path = video_info.files["video_input"]
         if move_input:
             os.replace(video_path, input_path)
         else:
             shutil.copyfile(video_path, input_path)
 
         try:
-            job_info.video_width, job_info.video_height = get_video_dimensions(input_path)
+            video_info.video_width, video_info.video_height = get_video_dimensions(input_path)
         except RuntimeError:
             # The UI can retry probing legacy or unusual files when the batch is opened.
-            job_info.video_width = 0
-            job_info.video_height = 0
+            video_info.video_width = 0
+            video_info.video_height = 0
 
-        job_store.save_job(job_info)
-        job_store.log_to_job(job_id, f"Imported input video: {video_path}")
-        return job_info
+        video_store.save_video(video_info)
+        video_store.log_to_video(video_id, f"Imported input video: {video_path}")
+        return video_info
     except Exception:
         try:
-            job_store.delete_job(job_id, attempts=2, delay_seconds=0.05)
+            video_store.delete_video(video_id, attempts=2, delay_seconds=0.05)
         except Exception:
             pass
-        export_directory = os.path.dirname(str(job_info.files.get("final_video") or ""))
+        export_directory = os.path.dirname(str(video_info.files.get("final_video") or ""))
         if export_directory:
             try:
                 os.rmdir(export_directory)

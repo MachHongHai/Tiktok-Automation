@@ -1,4 +1,4 @@
-"""Persistent metadata for desktop projects, including projects without jobs."""
+"""Persistent metadata for desktop projects, including projects without videos."""
 
 import json
 import os

@@ -40,7 +40,9 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def run_release_smoke(*, require_cpu_model: bool, require_gpu_model: bool) -> dict[str, object]:
+def run_release_smoke(
+    *, require_cpu_model: bool, require_gpu_model: bool, require_whisper_model: bool = False
+) -> dict[str, object]:
     failures: list[str] = []
     details: list[str] = []
     bundle = bundle_root()
@@ -118,6 +120,18 @@ def run_release_smoke(*, require_cpu_model: bool, require_gpu_model: bool) -> di
             failures.append(f"Bundled HY-MT2 GPU model integrity failed: {type(exc).__name__}: {exc}")
         _check(gpu_model_valid, "Bundled pinned HY-MT2 GPU model", failures, details)
 
+    if require_whisper_model:
+        from haizflow.core.model_integrity import verify_whisper_model
+
+        whisper_model = bundle / "models" / "whisper" / "small"
+        try:
+            verify_whisper_model(whisper_model)
+            whisper_model_valid = True
+        except Exception as exc:
+            whisper_model_valid = False
+            failures.append(f"Bundled Whisper model integrity failed: {type(exc).__name__}: {exc}")
+        _check(whisper_model_valid, "Bundled pinned Whisper model", failures, details)
+
     return {
         "event": "release_smoke",
         "ok": not failures,
@@ -132,10 +146,12 @@ def main(argv=None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--require-cpu-model", action="store_true")
     parser.add_argument("--require-gpu-model", action="store_true")
+    parser.add_argument("--require-whisper-model", action="store_true")
     args = parser.parse_args(argv)
     result = run_release_smoke(
         require_cpu_model=args.require_cpu_model,
         require_gpu_model=args.require_gpu_model,
+        require_whisper_model=args.require_whisper_model,
     )
     if sys.stdout is not None:
         print(json.dumps(result, ensure_ascii=True), flush=True)

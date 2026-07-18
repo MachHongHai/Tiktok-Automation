@@ -1,4 +1,4 @@
-﻿from collections.abc import Callable
+from collections.abc import Callable
 from threading import RLock
 
 LogListener = Callable[[str, str], None]
@@ -19,13 +19,13 @@ def unsubscribe_log(listener: LogListener) -> None:
             _log_listeners.remove(listener)
 
 
-def emit_log(job_id: str, message: str) -> None:
+def emit_log(video_id: str, message: str) -> None:
     with _lock:
         listeners = list(_log_listeners)
 
     for listener in listeners:
         try:
-            listener(job_id, message)
+            listener(video_id, message)
         except Exception:
             pass
 

@@ -8,7 +8,7 @@ ListView {
 
     clip: true
     spacing: Theme.space8
-    model: controller.taskModel
+    model: AppController.taskModel
     reuseItems: true
 
     delegate: Rectangle {

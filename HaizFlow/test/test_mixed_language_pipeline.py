@@ -16,10 +16,10 @@ if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
 from haizflow.pipeline import transcribe
-from haizflow.pipeline.process_job import _timing_file_is_current
+from haizflow.pipeline.process_video import _timing_file_is_current
 from haizflow.pipeline.subtitle import split_segment_into_cues
-from haizflow.schemas.job import JobConfig
-from haizflow.services import hymt2_worker, job_store, translation
+from haizflow.schemas.video import VideoConfig
+from haizflow.services import hymt2_worker, video_store, translation
 from haizflow.services.hymt2_worker import (
     _build_prompt,
     _build_translation_prompts,
@@ -50,8 +50,8 @@ class _AsrModel:
 
 class MixedLanguagePipelineTests(unittest.TestCase):
     def test_segment_language_detection_uses_immutable_sentence_clips(self):
-        original_log = transcribe.log_to_job
-        transcribe.log_to_job = lambda *_args, **_kwargs: None
+        original_log = transcribe.log_to_video
+        transcribe.log_to_video = lambda *_args, **_kwargs: None
         try:
             segments = [
                 {"start": 0.0, "end": 1.0, "text": "Hello"},
@@ -63,10 +63,10 @@ class MixedLanguagePipelineTests(unittest.TestCase):
                 np.zeros(16_000 * 5, dtype=np.float32),
                 segments,
                 "en",
-                "test-job",
+                "test-video",
             )
         finally:
-            transcribe.log_to_job = original_log
+            transcribe.log_to_video = original_log
 
         self.assertEqual([segment["language"] for segment in detected], ["en", "vi"])
         self.assertEqual(model.model.clip_lengths, [16_000, 24_000])
@@ -95,13 +95,13 @@ class MixedLanguagePipelineTests(unittest.TestCase):
         original_load_audio = transcribe.whisperx.load_audio
         original_align = transcribe._align_segments_by_language
         original_release = transcribe._release_cuda
-        original_log = transcribe.log_to_job
+        original_log = transcribe.log_to_video
         transcribe.runtime_profile = lambda: profile
         transcribe.whisperx.load_model = lambda *_args, **_kwargs: model
         transcribe.whisperx.load_audio = lambda _path: np.zeros(32_000, dtype=np.float32)
         transcribe._align_segments_by_language = lambda _audio, segments, *_args, **_kwargs: segments
         transcribe._release_cuda = lambda *_args, **_kwargs: None
-        transcribe.log_to_job = lambda *_args, **_kwargs: None
+        transcribe.log_to_video = lambda *_args, **_kwargs: None
         try:
             with tempfile.TemporaryDirectory() as temp_dir:
                 output_path = Path(temp_dir) / "segments.json"
@@ -109,7 +109,7 @@ class MixedLanguagePipelineTests(unittest.TestCase):
                     "audio.wav",
                     str(output_path),
                     "auto",
-                    "test-job",
+                    "test-video",
                 )
         finally:
             transcribe.runtime_profile = original_runtime_profile
@@ -117,7 +117,7 @@ class MixedLanguagePipelineTests(unittest.TestCase):
             transcribe.whisperx.load_audio = original_load_audio
             transcribe._align_segments_by_language = original_align
             transcribe._release_cuda = original_release
-            transcribe.log_to_job = original_log
+            transcribe.log_to_video = original_log
 
         self.assertEqual(language, "en")
         self.assertEqual(output[0]["text"], "S tier.")
@@ -130,8 +130,8 @@ class MixedLanguagePipelineTests(unittest.TestCase):
                 return {"segments": [{"text": " Xin chao."}]}
 
         model = WhisperModel()
-        original_log = transcribe.log_to_job
-        transcribe.log_to_job = lambda *_args, **_kwargs: None
+        original_log = transcribe.log_to_video
+        transcribe.log_to_video = lambda *_args, **_kwargs: None
         try:
             source = [
                 {"start": 1.25, "end": 3.75, "text": "bad", "language": "vi", "language_confidence": 0.95},
@@ -141,10 +141,10 @@ class MixedLanguagePipelineTests(unittest.TestCase):
                 np.zeros(16_000 * 5, dtype=np.float32),
                 source,
                 "en",
-                "test-job",
+                "test-video",
             )
         finally:
-            transcribe.log_to_job = original_log
+            transcribe.log_to_video = original_log
 
         self.assertEqual(len(corrected), 1)
         self.assertEqual((corrected[0]["start"], corrected[0]["end"]), (1.25, 3.75))
@@ -172,23 +172,23 @@ class MixedLanguagePipelineTests(unittest.TestCase):
         original_load_align_model = transcribe.whisperx.load_align_model
         original_align = transcribe.whisperx.align
         original_release = transcribe._release_cuda
-        original_log = transcribe.log_to_job
+        original_log = transcribe.log_to_video
         transcribe.whisperx.load_align_model = lambda **_kwargs: (object(), {})
         transcribe.whisperx.align = lambda *_args, **_kwargs: {"segments": compressed}
         transcribe._release_cuda = lambda *_args, **_kwargs: None
-        transcribe.log_to_job = lambda *_args, **_kwargs: None
+        transcribe.log_to_video = lambda *_args, **_kwargs: None
         try:
             aligned = transcribe._align_segments_by_language(
                 np.zeros(16_000 * 21, dtype=np.float32),
                 [source],
                 "cpu",
-                "test-job",
+                "test-video",
             )
         finally:
             transcribe.whisperx.load_align_model = original_load_align_model
             transcribe.whisperx.align = original_align
             transcribe._release_cuda = original_release
-            transcribe.log_to_job = original_log
+            transcribe.log_to_video = original_log
 
         self.assertEqual(len(aligned), 4)
         self.assertEqual(aligned[0]["start"], source["start"])
@@ -230,16 +230,16 @@ class MixedLanguagePipelineTests(unittest.TestCase):
             )
             captured = {}
             original_worker = translation._translate_with_hymt2_worker
-            original_log = translation.log_to_job
+            original_log = translation.log_to_video
             translation._translate_with_hymt2_worker = lambda texts, **kwargs: captured.update(kwargs) or ["Bonjour", "Hello"]
-            translation.log_to_job = lambda *_args, **_kwargs: None
+            translation.log_to_video = lambda *_args, **_kwargs: None
             try:
                 translated = translation.translate_segments(
-                    str(input_path), str(output_path), "test-job", target_language="fr", source_language="en"
+                    str(input_path), str(output_path), "test-video", target_language="fr", source_language="en"
                 )
             finally:
                 translation._translate_with_hymt2_worker = original_worker
-                translation.log_to_job = original_log
+                translation.log_to_video = original_log
 
         self.assertEqual(captured["source_languages"], ["English", "Vietnamese"])
         self.assertEqual([segment["source_language"] for segment in translated], ["en", "vi"])
@@ -574,19 +574,19 @@ class MixedLanguagePipelineTests(unittest.TestCase):
             if process.stderr is not None:
                 process.stderr.close()
 
-    def test_job_store_serializes_concurrent_updates_and_recovers_backup(self):
+    def test_video_store_serializes_concurrent_updates_and_recovers_backup(self):
         with tempfile.TemporaryDirectory() as temp_dir:
-            original_jobs_dir = job_store.JOBS_DIR
-            job_store.JOBS_DIR = temp_dir
+            original_videos_dir = video_store.LEGACY_VIDEO_WORKSPACES_DIR
+            video_store.LEGACY_VIDEO_WORKSPACES_DIR = temp_dir
             try:
-                job = job_store.create_job("job-store-test", "input.mp4", JobConfig())
+                video = video_store.create_video("video-store-test", "input.mp4", VideoConfig())
                 failures = []
 
                 def update_progress(offset):
                     try:
                         for value in range(offset, 100, 10):
-                            job_store.update_job(job.job_id, progress=value, step="processing")
-                            self.assertIsNotNone(job_store.get_job(job.job_id))
+                            video_store.update_video(video.video_id, progress=value, step="processing")
+                            self.assertIsNotNone(video_store.get_video(video.video_id))
                     except Exception as exc:  # pragma: no cover - assertion is reported below.
                         failures.append(exc)
 
@@ -597,16 +597,16 @@ class MixedLanguagePipelineTests(unittest.TestCase):
                     thread.join()
 
                 self.assertEqual(failures, [])
-                path = Path(job_store.get_job_json_path(job.job_id))
-                self.assertIsNotNone(job_store.get_job(job.job_id))
+                path = Path(video_store.get_video_json_path(video.video_id))
+                self.assertIsNotNone(video_store.get_video(video.video_id))
                 self.assertTrue(Path(str(path) + ".bak").exists())
 
                 path.write_text("{", encoding="utf-8")
-                recovered = job_store.get_job(job.job_id)
+                recovered = video_store.get_video(video.video_id)
                 self.assertIsNotNone(recovered)
-                self.assertEqual(json.loads(path.read_text(encoding="utf-8"))["job_id"], job.job_id)
+                self.assertEqual(json.loads(path.read_text(encoding="utf-8"))["video_id"], video.video_id)
             finally:
-                job_store.JOBS_DIR = original_jobs_dir
+                video_store.LEGACY_VIDEO_WORKSPACES_DIR = original_videos_dir
 
 
 if __name__ == "__main__":

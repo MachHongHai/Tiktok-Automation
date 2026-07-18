@@ -4,11 +4,11 @@ import "."
 Item {
     id: root
 
-    property int xPercent: controller.subtitleX
-    property int yPercent: controller.subtitleY
-    property int boxWidthPercent: controller.subtitleBoxWidth
-    property int boxHeightPercent: controller.subtitleBoxHeight
-    property int storedFontSize: controller.subtitleFontSize
+    property int xPercent: AppController.subtitleX
+    property int yPercent: AppController.subtitleY
+    property int boxWidthPercent: AppController.subtitleBoxWidth
+    property int boxHeightPercent: AppController.subtitleBoxHeight
+    property int storedFontSize: AppController.subtitleFontSize
     property string mode: ""
     property real originMouseX: 0
     property real originMouseY: 0
@@ -20,11 +20,11 @@ Item {
     signal edited(int xPercent, int yPercent, int widthPercent, int heightPercent, int fontSize)
 
     function resetFromController() {
-        xPercent = controller.subtitleX
-        yPercent = controller.subtitleY
-        boxWidthPercent = controller.subtitleBoxWidth
-        boxHeightPercent = controller.subtitleBoxHeight
-        storedFontSize = controller.subtitleFontSize
+        xPercent = AppController.subtitleX
+        yPercent = AppController.subtitleY
+        boxWidthPercent = AppController.subtitleBoxWidth
+        boxHeightPercent = AppController.subtitleBoxHeight
+        storedFontSize = AppController.subtitleFontSize
     }
 
     function edgeAt(localX, localY) {
@@ -54,7 +54,7 @@ Item {
     height: parent ? Math.max(42, parent.height * boxHeightPercent / 100) : 42
     x: parent ? Math.max(0, Math.min(parent.width - width, parent.width * xPercent / 100 - width / 2)) : 0
     y: parent ? Math.max(0, Math.min(parent.height - height, parent.height * yPercent / 100 - height / 2)) : 0
-    visible: controller.previewInteractive
+    visible: AppController.previewInteractive
 
     Rectangle {
         anchors.fill: parent

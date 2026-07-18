@@ -9,7 +9,7 @@ Dialog {
 
     property string importMode: "single"
     property string inspectedText: ""
-    readonly property var importer: controller.urlImporter
+    readonly property var importer: AppController.urlImporter
     readonly property bool hasMetadata: importer.title.length > 0
     readonly property bool hasStatus: importer.status.length > 0
     readonly property bool showsProgress: importer.state === "downloading"
@@ -53,7 +53,7 @@ Dialog {
     }
 
     Connections {
-        target: controller
+        target: AppController
 
         function onUrlImportFinished() {
             if (root.opened)
@@ -219,12 +219,20 @@ Dialog {
                         clip: true
 
                         Image {
+                            id: thumbnailImage
                             anchors.fill: parent
                             source: root.importer.thumbnailSource
                             sourceSize.width: 352
                             sourceSize.height: 198
                             fillMode: Image.PreserveAspectCrop
                             asynchronous: true
+                            visible: status === Image.Ready
+                        }
+
+                        ThumbnailFallback {
+                            anchors.fill: parent
+                            visible: root.importer.thumbnailSource.length === 0
+                                || thumbnailImage.status === Image.Error
                         }
                     }
 
@@ -356,7 +364,7 @@ Dialog {
                     enabled: !root.importer.busy && videoUrl.text.trim().length > 0
                     onClicked: {
                         if (root.importer.state === "ready" && root.inspectedText.length > 0)
-                            controller.downloadInspectedVideo()
+                            AppController.downloadInspectedVideo()
                         else {
                             root.inspectedText = ""
                             root.importer.inspect(videoUrl.text.trim())

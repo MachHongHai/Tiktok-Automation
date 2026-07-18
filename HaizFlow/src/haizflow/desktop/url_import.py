@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import threading
+import time
 
 from PySide6.QtCore import QObject, Property, Signal, Slot
 
@@ -38,6 +39,8 @@ class VideoUrlImportCoordinator(QObject):
         self._status = ""
         self._workspace = ""
         self._cancel_event = threading.Event()
+        self._threads: set[threading.Thread] = set()
+        self._threads_lock = threading.Lock()
         self._metadataResolved.connect(self._handle_metadata)
         self._progressResolved.connect(self._handle_progress)
         self._downloadResolved.connect(self._handle_download)
@@ -135,7 +138,7 @@ class VideoUrlImportCoordinator(QObject):
             except Exception as exc:
                 self._operationRejected.emit(generation, str(exc), False)
 
-        threading.Thread(target=inspect_link, name="video-link-inspection", daemon=True).start()
+        self._start_worker(inspect_link, "video-link-inspection")
 
     def start_download(self, project_root: str) -> bool:
         if self._state != "ready" or not self._metadata:
@@ -174,7 +177,7 @@ class VideoUrlImportCoordinator(QObject):
                 cleanup_download_workspace(workspace)
                 self._operationRejected.emit(generation, str(exc), False)
 
-        threading.Thread(target=download_link, name="video-link-download", daemon=True).start()
+        self._start_worker(download_link, "video-link-download")
         return True
 
     @Slot()
@@ -195,8 +198,35 @@ class VideoUrlImportCoordinator(QObject):
         if success:
             self.importFinished.emit()
 
-    def shutdown(self) -> None:
+    def shutdown(self, timeout_seconds: float = 5.0) -> bool:
         self._cancel_event.set()
+        deadline = time.monotonic() + max(0.0, timeout_seconds)
+        with self._threads_lock:
+            threads = tuple(self._threads)
+        for thread in threads:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            thread.join(timeout=remaining)
+        with self._threads_lock:
+            stopped = not any(thread.is_alive() for thread in self._threads)
+        if stopped:
+            cleanup_download_workspace(self._workspace)
+            self._workspace = ""
+        return stopped
+
+    def _start_worker(self, target, name: str) -> None:
+        def run() -> None:
+            try:
+                target()
+            finally:
+                with self._threads_lock:
+                    self._threads.discard(threading.current_thread())
+
+        thread = threading.Thread(target=run, name=name, daemon=True)
+        with self._threads_lock:
+            self._threads.add(thread)
+        thread.start()
 
     def _handle_metadata(self, generation, metadata):
         if generation != self._generation:

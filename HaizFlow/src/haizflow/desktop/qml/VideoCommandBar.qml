@@ -8,20 +8,20 @@ Rectangle {
 
     signal requestReviewTranslation()
 
-    readonly property bool hasOutput: controller.hasSelectedOutput
-    readonly property bool hasProject: controller.hasOpenProject
-    readonly property bool selectedProcessing: controller.isSelectedJobProcessing
-    readonly property bool canStart: controller.hasSelectedJob && controller.selectedStatus === "pending"
-        && !controller.isSelectedJobQueued
-    readonly property bool canRestart: controller.hasSelectedJob && !controller.isSelectedJobProcessing
-        && !controller.isSelectedJobQueued
-        && controller.selectedStatus !== "pending"
+    readonly property bool hasOutput: AppController.hasSelectedOutput
+    readonly property bool hasProject: AppController.hasOpenProject
+    readonly property bool selectedProcessing: AppController.isSelectedVideoProcessing
+    readonly property bool canStart: AppController.hasSelectedVideo && AppController.selectedStatus === "pending"
+        && !AppController.isSelectedVideoQueued
+    readonly property bool canRestart: AppController.hasSelectedVideo && !AppController.isSelectedVideoProcessing
+        && !AppController.isSelectedVideoQueued
+        && AppController.selectedStatus !== "pending"
     readonly property string headline: root.selectedProcessing
-        ? I18n.t(controller.selectedStageLabel)
-        : controller.selectedProgress >= 100
+        ? I18n.t(AppController.selectedStageLabel)
+        : AppController.selectedProgress >= 100
             ? I18n.t("Last export ready")
-            : controller.hasSelectedJob
-                ? I18n.t(controller.selectedStageLabel)
+            : AppController.hasSelectedVideo
+                ? I18n.t(AppController.selectedStageLabel)
                 : I18n.t("Ready to process")
 
     implicitHeight: 116
@@ -39,8 +39,8 @@ Rectangle {
             Layout.preferredWidth: 38
             Layout.preferredHeight: 38
             radius: Theme.radiusSmall
-            color: controller.selectedStatus === "done" ? Theme.successMuted
-                : controller.selectedStatus === "failed" ? Theme.dangerMuted
+            color: AppController.selectedStatus === "done" ? Theme.successMuted
+                : AppController.selectedStatus === "failed" ? Theme.dangerMuted
                 : root.selectedProcessing ? Theme.warningMuted
                 : Theme.surfaceElevated
 
@@ -48,12 +48,12 @@ Rectangle {
                 anchors.centerIn: parent
                 width: 20
                 height: 20
-                glyph: controller.selectedStatus === "done" ? "\uE73E"
-                    : controller.selectedStatus === "failed" ? "\uEA39"
+                glyph: AppController.selectedStatus === "done" ? "\uE73E"
+                    : AppController.selectedStatus === "failed" ? "\uEA39"
                     : root.selectedProcessing ? "\uE895"
                     : "\uE946"
-                iconColor: controller.selectedStatus === "done" ? Theme.success
-                    : controller.selectedStatus === "failed" ? Theme.danger
+                iconColor: AppController.selectedStatus === "done" ? Theme.success
+                    : AppController.selectedStatus === "failed" ? Theme.danger
                     : root.selectedProcessing ? Theme.warning
                     : Theme.textMuted
                 iconSize: Theme.icon
@@ -80,18 +80,18 @@ Rectangle {
                 }
 
                 Text {
-                    text: qsTr("%1%").arg(controller.selectedProgress)
-                    color: controller.selectedProgress >= 100 ? Theme.success : Theme.interactive
+                    text: qsTr("%1%").arg(AppController.selectedProgress)
+                    color: AppController.selectedProgress >= 100 ? Theme.success : Theme.interactive
                     font.pixelSize: Theme.h3
                     font.weight: Font.DemiBold
                     textFormat: Text.PlainText
                 }
 
                 Text {
-                    visible: controller.selectedElapsed.length > 0
-                    text: (controller.selectedStatus === "processing"
+                    visible: AppController.selectedElapsed.length > 0
+                    text: (AppController.selectedStatus === "processing"
                         ? I18n.t("Time running")
-                        : I18n.t("Processing time")) + " " + controller.selectedElapsed
+                        : I18n.t("Processing time")) + " " + AppController.selectedElapsed
                     color: Theme.textMuted
                     font.pixelSize: Theme.caption
                     textFormat: Text.PlainText
@@ -100,8 +100,8 @@ Rectangle {
 
             Text {
                 Layout.fillWidth: true
-                text: I18n.progressDetail(controller.selectedProgressDetail
-                    || controller.selectedStep
+                text: I18n.progressDetail(AppController.selectedProgressDetail
+                    || AppController.selectedStep
                     || "Processing status will appear here")
                 color: Theme.textMuted
                 font.pixelSize: Theme.caption
@@ -111,7 +111,7 @@ Rectangle {
 
             AppProgressBar {
                 Layout.fillWidth: true
-                value: controller.selectedProgress
+                value: AppController.selectedProgress
             }
         }
 
@@ -119,15 +119,15 @@ Rectangle {
             spacing: Theme.space8
 
             AppButton {
-                visible: controller.selectedStatus === "paused"
+                visible: AppController.selectedStatus === "paused"
                 text: I18n.t("Resume")
                 iconGlyph: "\uE768"
                 tone: "primary"
-                onClicked: controller.resumeSelectedJob()
+                onClicked: AppController.resumeSelectedVideo()
             }
 
             AppButton {
-                visible: controller.selectedStatus === "awaiting_review"
+                visible: AppController.selectedStatus === "awaiting_review"
                 text: I18n.t("Review translation")
                 iconGlyph: "\uE70F"
                 tone: "primary"
@@ -139,7 +139,7 @@ Rectangle {
                 text: I18n.t("Process")
                 iconGlyph: "\uE768"
                 tone: "primary"
-                onClicked: controller.startProjectJob()
+                onClicked: AppController.startProjectVideo()
             }
 
             AppButton {
@@ -147,7 +147,7 @@ Rectangle {
                 text: I18n.t("Restart")
                 iconGlyph: "\uE72C"
                 tone: "primary"
-                onClicked: controller.restartSelectedJob()
+                onClicked: AppController.restartSelectedVideo()
             }
 
             AppButton {
@@ -155,35 +155,35 @@ Rectangle {
                 text: I18n.t("Pause")
                 iconGlyph: "\uE769"
                 tone: "danger"
-                onClicked: controller.stopJob()
+                onClicked: AppController.stopVideo()
             }
 
             AppButton {
-                visible: controller.hasSelectedJob
+                visible: AppController.hasSelectedVideo
                 text: I18n.t("Open output video")
                 iconGlyph: "\uE768"
                 tone: "primary"
                 enabled: root.hasOutput
-                onClicked: controller.openOutputFile()
+                onClicked: AppController.openOutputFile()
             }
 
             AppButton {
-                visible: root.hasProject && !controller.hasSelectedJob
+                visible: root.hasProject && !AppController.hasSelectedVideo
                 text: I18n.t("Open project folder")
                 iconGlyph: "\uE8B7"
                 tone: "secondary"
-                onClicked: controller.openProjectFolder()
+                onClicked: AppController.openProjectFolder()
             }
 
             IconButton {
                 id: moreButton
-                visible: controller.hasSelectedJob || root.hasProject
+                visible: AppController.hasSelectedVideo || root.hasProject
                 glyph: "\uE712"
                 toolTipText: I18n.t("More actions")
-                onClicked: jobMenu.open()
+                onClicked: videoMenu.open()
 
                 Menu {
-                    id: jobMenu
+                    id: videoMenu
                     width: 242
                     y: -height - 8
                     padding: 6
@@ -206,30 +206,30 @@ Rectangle {
                     AppMenuItem {
                         text: I18n.t("Open input video")
                         iconGlyph: "\uE714"
-                        visible: controller.hasSelectedJob
-                        onTriggered: controller.openInputFile()
+                        visible: AppController.hasSelectedVideo
+                        onTriggered: AppController.openInputFile()
                     }
 
                     AppMenuItem {
                         text: I18n.t("Open export folder")
                         iconGlyph: "\uE8B7"
-                        visible: controller.hasSelectedJob
-                        onTriggered: controller.openOutputFolder()
+                        visible: AppController.hasSelectedVideo
+                        onTriggered: AppController.openOutputFolder()
                     }
 
                     AppMenuItem {
                         text: I18n.t("Open project folder")
                         iconGlyph: "\uE8B7"
                         visible: root.hasProject
-                        onTriggered: controller.openProjectFolder()
+                        onTriggered: AppController.openProjectFolder()
                     }
 
                     AppMenuItem {
                         text: I18n.t("Remove video")
                         iconGlyph: "\uE74D"
                         tone: "danger"
-                        visible: controller.isSelectedBatchJob
-                        onTriggered: controller.deleteSelectedJob()
+                        visible: AppController.isSelectedBatchVideo
+                        onTriggered: AppController.deleteSelectedVideo()
                     }
 
                     AppMenuItem {
@@ -238,8 +238,8 @@ Rectangle {
                         tone: "danger"
                         // Batch deletion belongs to the batch-level action bar.
                         // An opened batch video can only remove that video here.
-                        visible: root.hasProject && !controller.isSelectedBatchJob
-                        onTriggered: controller.deleteCurrentProject()
+                        visible: root.hasProject && !AppController.isSelectedBatchVideo
+                        onTriggered: AppController.deleteCurrentProject()
                     }
                 }
             }

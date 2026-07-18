@@ -41,7 +41,7 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def finalize(artifact_directory: Path, *, cpu_model: bool, gpu_model: bool) -> None:
+def finalize(artifact_directory: Path, *, cpu_model: bool, gpu_model: bool, whisper_model: bool) -> None:
     artifact = artifact_directory.resolve()
     executable = artifact / "HaizFlow.exe"
     if not executable.is_file():
@@ -49,7 +49,7 @@ def finalize(artifact_directory: Path, *, cpu_model: bool, gpu_model: bool) -> N
 
     if str(SRC) not in sys.path:
         sys.path.insert(0, str(SRC))
-    from haizflow.core.model_integrity import HYMT2_CPU_REVISION, HYMT2_GPU_REVISION
+    from haizflow.core.model_integrity import HYMT2_CPU_REVISION, HYMT2_GPU_REVISION, WHISPER_REVISION
 
     version = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))["project"]["version"]
     build_info = {
@@ -62,8 +62,10 @@ def finalize(artifact_directory: Path, *, cpu_model: bool, gpu_model: bool) -> N
         "python": sys.version.split()[0],
         "bundled_cpu_model": cpu_model,
         "bundled_gpu_model": gpu_model,
+        "bundled_whisper_model": whisper_model,
         "hymt2_cpu_revision": HYMT2_CPU_REVISION,
         "hymt2_gpu_revision": HYMT2_GPU_REVISION,
+        "whisper_revision": WHISPER_REVISION,
         "packaging": "PyInstaller onedir",
     }
     (artifact / "BUILD-INFO.json").write_text(
@@ -91,8 +93,14 @@ def main(argv=None) -> int:
     parser.add_argument("--artifact", type=Path, required=True)
     parser.add_argument("--cpu-model", action="store_true")
     parser.add_argument("--gpu-model", action="store_true")
+    parser.add_argument("--whisper-model", action="store_true")
     args = parser.parse_args(argv)
-    finalize(args.artifact, cpu_model=args.cpu_model, gpu_model=args.gpu_model)
+    finalize(
+        args.artifact,
+        cpu_model=args.cpu_model,
+        gpu_model=args.gpu_model,
+        whisper_model=args.whisper_model,
+    )
     return 0
 
 

@@ -57,34 +57,36 @@ Item {
             IconButton {
                 glyph: "\uE72C"
                 toolTipText: I18n.t("Refresh")
-                onClicked: controller.refreshJobs()
+                onClicked: AppController.refreshVideos()
             }
         }
 
-        Flickable {
-            id: projectFlick
+        GridView {
+            id: projectGrid
 
-            readonly property int columnCount: Math.max(2, Math.floor((width + projectFlow.spacing) / 270))
-            readonly property real cardWidth: Math.min(320, Math.floor((width - (columnCount - 1) * projectFlow.spacing) / columnCount))
+            readonly property int columnCount: Math.max(1, Math.floor((width + Theme.space16) / 270))
+            readonly property real cardWidth: Math.min(320, Math.floor(
+                (width - (columnCount - 1) * Theme.space16) / columnCount))
+            readonly property real cardHeight: Math.round(cardWidth * 0.58 + 82)
 
             Layout.fillWidth: true
             Layout.fillHeight: true
+            model: root.projectModel
+            cellWidth: cardWidth + Theme.space16
+            cellHeight: cardHeight + Theme.space16
             clip: true
-            contentWidth: width
-            contentHeight: projectFlow.height + 8
             boundsBehavior: Flickable.StopAtBounds
+            reuseItems: true
 
-            Flow {
-                id: projectFlow
-                width: projectFlick.width
-                height: childrenRect.height
-                spacing: Theme.space16
+            header: Item {
+                width: projectGrid.width
+                height: projectGrid.cardHeight + Theme.space16
 
                 Rectangle {
                     id: newProjectCard
 
-                    width: projectFlick.cardWidth
-                    height: Math.round(width * 0.58 + 82)
+                    width: projectGrid.cardWidth
+                    height: projectGrid.cardHeight
                     radius: Theme.radius
                     color: newProjectHover.hovered ? Theme.interactiveMuted : Theme.surfaceElevated
                     border.width: activeFocus ? 2 : 1
@@ -165,17 +167,13 @@ Item {
                         NumberAnimation { duration: Theme.motionFast; easing.type: Easing.OutCubic }
                     }
                 }
+            }
 
-                Repeater {
-                    model: root.projectModel
-
-                    delegate: ProjectCard {
-                        width: projectFlick.cardWidth
-                        onActivated: {
-                            controller.selectProjectInMode(index, root.projectType)
-                            root.openProject(root.projectType)
-                        }
-                    }
+            delegate: ProjectCard {
+                width: projectGrid.cardWidth
+                onActivated: {
+                    AppController.selectProjectInMode(index, root.projectType)
+                    root.openProject(root.projectType)
                 }
             }
 

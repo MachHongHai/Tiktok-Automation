@@ -80,13 +80,13 @@ class TtsReliabilityTests(unittest.TestCase):
             with (
                 mock.patch.object(tts, "tts_segment_with_retry", fake_synthesize),
                 mock.patch.object(tts, "_sleep_with_cancellation", no_wait),
-                mock.patch.object(tts, "log_to_job"),
+                mock.patch.object(tts, "log_to_video"),
             ):
                 tts.generate_voice_parts(
                     str(segments_path),
                     str(voice_dir),
                     "voice",
-                    "job",
+                    "video",
                     lambda current, total: progress.append((current, total)),
                 )
 
@@ -110,10 +110,10 @@ class TtsReliabilityTests(unittest.TestCase):
             logs = []
             with (
                 mock.patch.object(tts, "tts_segment_with_retry", fake_synthesize),
-                mock.patch.object(tts, "log_to_job", lambda _job, line: logs.append(line)),
+                mock.patch.object(tts, "log_to_video", lambda _video, line: logs.append(line)),
             ):
                 tts.generate_voice_parts(
-                    str(segments_path), str(Path(temp_dir) / "voice"), "voice", "job"
+                    str(segments_path), str(Path(temp_dir) / "voice"), "voice", "video"
                 )
 
         self.assertTrue(any("[TTS][START] segment=1/3" in line for line in logs))
@@ -151,10 +151,10 @@ class TtsReliabilityTests(unittest.TestCase):
             with (
                 mock.patch.object(tts, "TTS_MAX_CONCURRENCY", 1),
                 mock.patch.object(tts, "tts_segment_with_retry", measured_synthesize),
-                mock.patch.object(tts, "log_to_job"),
+                mock.patch.object(tts, "log_to_video"),
             ):
                 tts.generate_voice_parts(
-                    str(segments_path), str(Path(temp_dir) / "voice"), "voice", "job"
+                    str(segments_path), str(Path(temp_dir) / "voice"), "voice", "video"
                 )
 
         self.assertEqual(maximum_active, 1)
@@ -175,11 +175,11 @@ class TtsReliabilityTests(unittest.TestCase):
             with (
                 mock.patch.object(tts, "tts_segment_with_retry", fail_once),
                 mock.patch.object(tts, "_sleep_with_cancellation", no_wait),
-                mock.patch.object(tts, "log_to_job", lambda _job, line: logs.append(line)),
+                mock.patch.object(tts, "log_to_video", lambda _video, line: logs.append(line)),
             ):
                 with self.assertRaisesRegex(RuntimeError, "segment\\(s\\): 1"):
                     tts.generate_voice_parts(
-                        str(segments_path), str(Path(temp_dir) / "voice"), "voice", "job"
+                        str(segments_path), str(Path(temp_dir) / "voice"), "voice", "video"
                     )
 
         self.assertTrue(any("[TTS][RETRY]" in line and "error=edge_no_audio" in line for line in logs))
@@ -199,11 +199,11 @@ class TtsReliabilityTests(unittest.TestCase):
             with (
                 mock.patch.object(tts, "tts_segment_with_retry", always_fail),
                 mock.patch.object(tts, "_sleep_with_cancellation", no_wait),
-                mock.patch.object(tts, "log_to_job"),
+                mock.patch.object(tts, "log_to_video"),
             ):
                 with self.assertRaisesRegex(RuntimeError, "segment\\(s\\): 1"):
                     tts.generate_voice_parts(
-                        str(segments_path), str(voice_dir), "voice", "job"
+                        str(segments_path), str(voice_dir), "voice", "video"
                     )
 
             output = voice_dir / "voice_0001.mp3"
@@ -230,10 +230,10 @@ class TtsReliabilityTests(unittest.TestCase):
 
             with (
                 mock.patch.object(tts, "tts_segment_with_retry", fake_synthesize),
-                mock.patch.object(tts, "log_to_job"),
+                mock.patch.object(tts, "log_to_video"),
             ):
                 tts.generate_voice_parts(
-                    str(segments_path), str(voice_dir), "voice", "job"
+                    str(segments_path), str(voice_dir), "voice", "video"
                 )
 
             self.assertEqual(calls, [("missing", tts._INITIAL_RETRIES)])

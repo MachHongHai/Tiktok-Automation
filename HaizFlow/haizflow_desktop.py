@@ -59,6 +59,10 @@ if not getattr(sys, "frozen", False) and VENV_PYTHON.exists() and not _running_i
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
+# Configure portable cache/model/temp paths before importing Qt, Torch,
+# WhisperX, or any worker implementation.
+import haizflow.config as _runtime_config  # noqa: E402,F401
+
 _INTERNAL_STREAM_MODES = {
     "--douyin-channel-worker",
     "--hymt2-worker",
@@ -104,4 +108,3 @@ from haizflow.desktop.main import main
 
 if __name__ == "__main__":
     main()
-

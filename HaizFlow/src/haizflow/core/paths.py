@@ -29,13 +29,27 @@ def project_root() -> Path:
     return source_root().parent
 
 
-def app_data_dir() -> Path:
-    override = os.getenv("APP_DATA_DIR")
+def install_root() -> Path:
+    """Directory selected for the application installation.
+
+    Source builds use the repository application root. Frozen builds use the
+    directory containing the executable. An installer may set the override
+    explicitly before launching HaizFlow.
+    """
+    override = os.getenv("HAIZFLOW_INSTALL_ROOT")
     if override:
         return Path(override).expanduser().resolve()
+    return project_root()
 
-    base = Path(os.getenv("LOCALAPPDATA") or str(Path.home() / "AppData" / "Local"))
-    return base / APP_NAME
+
+def app_data_dir() -> Path:
+    override = os.getenv("HAIZFLOW_HOME") or os.getenv("APP_DATA_DIR")
+    if override:
+        return Path(override).expanduser().resolve()
+    # Portable-by-default layout: installer location determines where every
+    # HaizFlow-owned mutable file is written. This also prevents silent writes
+    # to the Windows system drive when the user installs on another drive.
+    return install_root() / "runtime"
 
 
 def runtime_data_dir() -> Path:
@@ -43,7 +57,15 @@ def runtime_data_dir() -> Path:
     override = os.getenv("RUNTIME_DATA_DIR")
     if override:
         path = Path(override).expanduser()
-        return path.resolve() if path.is_absolute() else (app_data_dir() / path).resolve()
+        candidate = path.resolve() if path.is_absolute() else (app_data_dir() / path).resolve()
+        home_override = os.getenv("HAIZFLOW_HOME")
+        if (
+            home_override
+            and os.getenv("HAIZFLOW_SMOKE_TEST") != "1"
+            and not candidate.is_relative_to(Path(home_override).expanduser().resolve())
+        ):
+            return app_data_dir() / "data"
+        return candidate
     return app_data_dir() / "data"
 
 
@@ -52,8 +74,22 @@ def legacy_runtime_data_dir() -> Path:
     return project_root() / "data"
 
 
+def models_dir() -> Path:
+    override = os.getenv("MODELS_DIR")
+    if override:
+        path = Path(override).expanduser()
+        candidate = path.resolve() if path.is_absolute() else (app_data_dir() / path).resolve()
+        home_override = os.getenv("HAIZFLOW_HOME")
+        if home_override and not candidate.is_relative_to(Path(home_override).expanduser().resolve()):
+            return app_data_dir() / "models"
+        return candidate
+    return app_data_dir() / "models"
+
+
 def storage_dir() -> Path:
     """Legacy pre-project-first video workspace location, retained for migration."""
+    # Historical releases called processing records "jobs" and stored them in
+    # this directory. The literal path must remain readable until migration.
     return runtime_data_dir() / "jobs"
 
 

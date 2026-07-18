@@ -2,6 +2,7 @@ param(
   [string]$ArtifactPath = "",
   [switch]$RequireCpuModel,
   [switch]$RequireGpuModel,
+  [switch]$RequireWhisperModel,
   [switch]$ProbeGpu
 )
 
@@ -31,6 +32,9 @@ if ($RequireCpuModel) {
 }
 if ($RequireGpuModel) {
   $ReleaseArguments += "--require-gpu-model"
+}
+if ($RequireWhisperModel) {
+  $ReleaseArguments += "--require-whisper-model"
 }
 Invoke-FrozenCheck -Arguments $ReleaseArguments -Label "Frozen files and native media tools"
 Invoke-FrozenCheck -Arguments @("--runtime-probe", "cpu") -Label "Frozen CPU runtime"

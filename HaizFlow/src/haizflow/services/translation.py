@@ -12,8 +12,8 @@ from pathlib import Path
 from haizflow.config import HYMT2_REQUEST_TIMEOUT_SECONDS, HYMT2_WARM_TIMEOUT_SECONDS
 from haizflow.core.hardware import runtime_profile
 from haizflow.core.paths import is_frozen, project_root
-from haizflow.pipeline.job_manager import register_process, unregister_process
-from haizflow.services.job_store import log_to_job
+from haizflow.pipeline.process_registry import register_process, unregister_process
+from haizflow.services.video_store import log_to_video
 
 try:
     from transformers.models.whisper.tokenization_whisper import LANGUAGES as WHISPER_LANGUAGE_NAMES
@@ -57,7 +57,7 @@ def language_name(language_code: str) -> str:
 def translate_segments(
     input_json_path: str,
     output_json_path: str,
-    job_id: str,
+    video_id: str,
     target_language: str = "vi",
     source_language: str = "auto",
     provider: str = "hymt2",
@@ -67,7 +67,7 @@ def translate_segments(
         raise ValueError("HY-MT2 is the only supported translation provider.")
 
     target_language_name = language_name(target_language)
-    log_to_job(job_id, f"Initializing HY-MT2 translation | target: {target_language_name}.")
+    log_to_video(video_id, f"Initializing HY-MT2 translation | target: {target_language_name}.")
     with open(input_json_path, "r", encoding="utf-8") as file:
         segments = json.load(file)
 
@@ -75,7 +75,7 @@ def translate_segments(
     source_codes = [str(segment.get("language") or source_language or "en").lower() for segment in segments]
     translations = _translate_with_hymt2_worker(
         source_texts,
-        job_id=job_id,
+        video_id=video_id,
         source_languages=[language_name(code) for code in source_codes],
         target_language_name=target_language_name,
         progress_callback=progress_callback,
@@ -92,9 +92,9 @@ def translate_segments(
     ):
         translated_text = clean_translation(translated_text)
         if is_suspicious_translation(source_text, translated_text, target_language_name):
-            log_to_job(job_id, f"[{index}/{total}] HY-MT2 output failed validation. Keeping the source subtitle.")
+            log_to_video(video_id, f"[{index}/{total}] HY-MT2 output failed validation. Keeping the source subtitle.")
             translated_text = source_text
-        log_to_job(job_id, f"[{index}/{total}] Segment translation: '{source_text}' -> '{translated_text}'")
+        log_to_video(video_id, f"[{index}/{total}] Segment translation: '{source_text}' -> '{translated_text}'")
         translated_segments.append(
             {
                 "start": segment["start"],
@@ -107,7 +107,7 @@ def translate_segments(
 
     with open(output_json_path, "w", encoding="utf-8") as file:
         json.dump(translated_segments, file, ensure_ascii=False, indent=2)
-    log_to_job(job_id, f"Saved translated segments to: {output_json_path}")
+    log_to_video(video_id, f"Saved translated segments to: {output_json_path}")
     return translated_segments
 
 
@@ -364,7 +364,7 @@ def shutdown_hymt2_worker() -> None:
 
 
 def warm_hymt2_worker(status_callback=None) -> None:
-    """Load HY-MT2 once in the persistent worker before the first job arrives."""
+    """Load HY-MT2 once in the persistent worker before the first video arrives."""
     global _WORKER_WARM
     with _WORKER_LOCK:
         process, output_queue = _ensure_hymt2_worker()
@@ -429,7 +429,7 @@ def warm_hymt2_worker(status_callback=None) -> None:
 
 def _translate_with_hymt2_worker(
     texts: list[str],
-    job_id: str,
+    video_id: str,
     source_languages: list[str],
     target_language_name: str,
     progress_callback=None,
@@ -451,10 +451,10 @@ def _translate_with_hymt2_worker(
             },
         }
         worker_output = []
-        log_to_job(job_id, "Sending translation request to persistent HY-MT2 worker.")
+        log_to_video(video_id, "Sending translation request to persistent HY-MT2 worker.")
         diagnostic_path = _worker_diagnostic_path(process)
-        log_to_job(job_id, f"HY-MT2 diagnostic log: {diagnostic_path or 'unavailable'}")
-        register_process(job_id, process)
+        log_to_video(video_id, f"HY-MT2 diagnostic log: {diagnostic_path or 'unavailable'}")
+        register_process(video_id, process)
         try:
             if process.stdin is None:
                 raise RuntimeError("HY-MT2 worker input channel is unavailable.")
@@ -483,7 +483,7 @@ def _translate_with_hymt2_worker(
                     continue
                 if event.get("event") == "status":
                     detail = str(event.get("detail", "Preparing HY-MT2 translation"))
-                    log_to_job(job_id, detail)
+                    log_to_video(video_id, detail)
                     if progress_callback:
                         progress_callback(0, 0, detail)
                     continue
@@ -491,7 +491,7 @@ def _translate_with_hymt2_worker(
                     total = int(event.get("total", len(texts)))
                     completed = int(event.get("completed", 0))
                     detail = f"Translating subtitles {event.get('start', completed + 1)}-{event.get('end', completed)} of {total}"
-                    log_to_job(job_id, detail)
+                    log_to_video(video_id, detail)
                     if progress_callback:
                         progress_callback(completed, total, detail)
                     continue
@@ -499,7 +499,7 @@ def _translate_with_hymt2_worker(
                     current = int(event.get("current", 0))
                     total = int(event.get("total", len(texts)))
                     detail = f"Translated {current} of {total} subtitles"
-                    log_to_job(job_id, detail)
+                    log_to_video(video_id, detail)
                     if progress_callback:
                         progress_callback(current, total, detail)
                     continue
@@ -516,15 +516,15 @@ def _translate_with_hymt2_worker(
                 _WORKER_WARM = True
                 _schedule_worker_idle_shutdown()
                 if runtime_profile().is_cpu_only:
-                    log_to_job(
-                        job_id,
+                    log_to_video(
+                        video_id,
                         f"HY-MT2 CPU model stays warm for {runtime_profile().translation_idle_seconds} seconds.",
                     )
                 else:
-                    log_to_job(job_id, "HY-MT2 translation completed; model stays warm for the next job.")
+                    log_to_video(video_id, "HY-MT2 translation completed; model stays warm for the next video.")
                 return translations
         finally:
-            unregister_process(job_id, process)
+            unregister_process(video_id, process)
 
         _collect_remaining_worker_output(process, output_queue, worker_output)
         return_code = process.returncode

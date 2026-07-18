@@ -7,8 +7,8 @@ import unittest
 import uuid
 from pathlib import Path
 
-from haizflow.schemas.job import VIDEO_METADATA_SCHEMA_VERSION, JobConfig, MediaSource
-from haizflow.services import job_store, project_store
+from haizflow.schemas.video import VIDEO_METADATA_SCHEMA_VERSION, VideoConfig, MediaSource
+from haizflow.services import video_store, project_store
 
 
 class ProjectIndexRecoveryTests(unittest.TestCase):
@@ -137,27 +137,27 @@ class VideoMetadataMigrationTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)
         self.original_index = project_store.PROJECT_INDEX_PATH
-        self.original_jobs = job_store.JOBS_DIR
+        self.original_videos = video_store.LEGACY_VIDEO_WORKSPACES_DIR
         project_store.PROJECT_INDEX_PATH = str(self.root / "runtime" / "projects.json")
-        job_store.JOBS_DIR = str(self.root / "legacy-jobs")
+        video_store.LEGACY_VIDEO_WORKSPACES_DIR = str(self.root / "legacy-videos")
 
     def tearDown(self):
         project_store.PROJECT_INDEX_PATH = self.original_index
-        job_store.JOBS_DIR = self.original_jobs
+        video_store.LEGACY_VIDEO_WORKSPACES_DIR = self.original_videos
         self.temp.cleanup()
 
     def _create_video(self):
         name = f"Migration-{uuid.uuid4().hex}"
         project_store.ensure_project(name, str(self.root / "projects"), "single")
-        return job_store.create_job(
+        return video_store.create_video(
             uuid.uuid4().hex,
             "source.mp4",
-            JobConfig(project_name=name, project_directory=str(self.root / "projects")),
+            VideoConfig(project_name=name, project_directory=str(self.root / "projects")),
         )
 
     def test_unversioned_video_metadata_migrates_and_preserves_original(self):
         video = self._create_video()
-        path = Path(job_store.get_job_json_path(video.job_id))
+        path = Path(video_store.get_video_json_path(video.video_id))
         legacy = json.loads(path.read_text(encoding="utf-8"))
         legacy.pop("schema_version")
         legacy.pop("metadata_type")
@@ -166,7 +166,7 @@ class VideoMetadataMigrationTests(unittest.TestCase):
         legacy["translator_provider"] = "ollama"
         path.write_text(json.dumps(legacy), encoding="utf-8")
 
-        migrated = job_store.get_job(video.job_id)
+        migrated = video_store.get_video(video.video_id)
         saved = json.loads(path.read_text(encoding="utf-8"))
         backup = json.loads(Path(f"{path}.schema-migration.bak").read_text(encoding="utf-8"))
 
@@ -179,15 +179,34 @@ class VideoMetadataMigrationTests(unittest.TestCase):
         self.assertEqual(saved["media_source"]["type"], "local_file")
         self.assertNotIn("schema_version", backup)
 
+    def test_v4_job_metadata_is_upgraded_to_video_metadata_without_data_loss(self):
+        video = self._create_video()
+        video_path = Path(video_store.get_video_json_path(video.video_id))
+        legacy_path = video_path.with_name("job.json")
+        legacy = json.loads(video_path.read_text(encoding="utf-8"))
+        legacy["schema_version"] = 4
+        legacy["job_id"] = legacy.pop("video_id")
+        legacy_path.write_text(json.dumps(legacy), encoding="utf-8")
+        video_path.unlink()
+
+        migrated = video_store.get_video(video.video_id)
+        saved = json.loads(video_path.read_text(encoding="utf-8"))
+
+        self.assertEqual(migrated.video_id, video.video_id)
+        self.assertEqual(saved["video_id"], video.video_id)
+        self.assertNotIn("job_id", saved)
+        self.assertEqual(saved["schema_version"], VIDEO_METADATA_SCHEMA_VERSION)
+        self.assertTrue(Path(f"{legacy_path}.legacy.bak").is_file())
+
     def test_future_video_schema_is_rejected_without_falling_back(self):
         video = self._create_video()
-        path = Path(job_store.get_job_json_path(video.job_id))
+        path = Path(video_store.get_video_json_path(video.video_id))
         future = json.loads(path.read_text(encoding="utf-8"))
         future["schema_version"] = VIDEO_METADATA_SCHEMA_VERSION + 1
         path.write_text(json.dumps(future), encoding="utf-8")
 
         with self.assertRaises(RuntimeError):
-            job_store.get_job(video.job_id)
+            video_store.get_video(video.video_id)
 
         self.assertEqual(
             json.loads(path.read_text(encoding="utf-8"))["schema_version"],

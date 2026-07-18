@@ -1,6 +1,8 @@
 import sys
 from pathlib import Path
 
+import haizflow.config as _runtime_config  # noqa: F401
+
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtQml import QQmlApplicationEngine
 from PySide6.QtWidgets import QApplication
@@ -41,14 +43,16 @@ def main(*, smoke_test: bool = False) -> None:
         coordinator.activationRequested.connect(activate_window)
 
     try:
-        controller = HaizFlowController()
         engine = QQmlApplicationEngine()
         qml_dir = Path(__file__).resolve().parent / "qml"
         engine.addImportPath(str(qml_dir))
-        engine.rootContext().setContextProperty("controller", controller)
         engine.load(str(qml_dir / "Main.qml"))
         if not engine.rootObjects():
             raise SystemExit(1)
+        controller = HaizFlowController._qml_instance
+        if controller is None:
+            raise RuntimeError("QML did not create the AppController singleton")
+        engine.rootObjects()[0].installEventFilter(controller)
         if activation_pending:
             QTimer.singleShot(0, activate_window)
         if smoke_test:

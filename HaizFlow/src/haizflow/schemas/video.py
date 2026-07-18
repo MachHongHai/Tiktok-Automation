@@ -2,7 +2,7 @@ from pydantic import BaseModel, Field
 from typing import Dict, Literal, Optional
 
 
-VIDEO_METADATA_SCHEMA_VERSION = 4
+VIDEO_METADATA_SCHEMA_VERSION = 5
 VIDEO_METADATA_TYPE = "haizflow.video"
 
 
@@ -38,7 +38,7 @@ class CropSettings(BaseModel):
     bottom_percent: int = 0
 
 
-class JobConfig(BaseModel):
+class VideoConfig(BaseModel):
     mode: str = "A"  # A = full auto, review = pause after translation.
     source_language: str = "auto"  # Automatic detection is performed for every speech segment.
     target_language: str = "vi"
@@ -57,10 +57,10 @@ class JobConfig(BaseModel):
     review_approved: bool = False
 
 
-class JobInfo(BaseModel):
+class VideoInfo(BaseModel):
     schema_version: int = VIDEO_METADATA_SCHEMA_VERSION
     metadata_type: str = VIDEO_METADATA_TYPE
-    job_id: str
+    video_id: str
     original_filename: str
     mode: str
     source_language: str

@@ -103,10 +103,10 @@ The UI remains usable while a video is processing. A newly submitted project is 
 
 HaizFlow ships one source architecture for both GPU and CPU execution.
 
-- **GPU mode:** recommended for NVIDIA CUDA devices with enough available VRAM. WhisperX and HY-MT2 are warmed in a controlled order to reduce first-job delay and avoid peak-memory collisions.
+- **GPU mode:** recommended for NVIDIA CUDA devices with enough available VRAM. WhisperX and HY-MT2 are warmed in a controlled order to reduce first-video delay and avoid peak-memory collisions.
 - **CPU mode:** uses WhisperX INT8 and HY-MT2 Q4. It is slower but keeps the product usable on computers without a discrete GPU.
-- **Runtime safety:** the app exposes the active processing device, validates a requested CPU/GPU change, and keeps the active job stable when the user changes a preference. A genuine GPU loss can trigger controlled recovery rather than leaving a project in an ambiguous state.
-- **Storage safety:** model cache, Torch cache, Hugging Face cache, uv/pip cache, temporary files, logs, and project data are configured through `RUNTIME_DATA_DIR` and related paths. The current local development setup keeps them on `D:\HaizFlowData`.
+- **Runtime safety:** the app exposes the active processing device, validates a requested CPU/GPU change, and keeps the active video stable when the user changes a preference. A genuine GPU loss can trigger controlled recovery rather than leaving a project in an ambiguous state.
+- **Storage safety:** `HAIZFLOW_HOME` is a hard containment root for models, Qt, Torch, Hugging Face, uv/pip, temporary files, logs, settings, and the project index. The current development machine uses `D:\HaizFlowData`; an installer will derive the same layout from the directory selected by the user.
 
 ### Privacy, Cost, and Network Use
 
@@ -142,15 +142,11 @@ cd HaizFlow\HaizFlow
 Copy-Item .env.example .env
 ```
 
-Set a local data location before downloading models or importing large media:
+Set one application home before preparing models or importing large media:
 
 ```env
+HAIZFLOW_HOME=D:\HaizFlowData
 RUNTIME_DATA_DIR=D:\HaizFlowData
-HF_HOME=D:\HaizFlowData\cache\huggingface
-TORCH_HOME=D:\HaizFlowData\cache\torch
-PIP_CACHE_DIR=D:\HaizFlowData\cache\pip
-UV_CACHE_DIR=D:\HaizFlowData\cache\uv
-HAIZFLOW_TMP_DIR=D:\HaizFlowData\cache\tmp
 ```
 
 Install and run:
@@ -272,7 +268,7 @@ Các thành phần chính gồm:
 
 - **GPU:** khuyến nghị cho máy có NVIDIA CUDA và VRAM khả dụng đủ lớn. Model được warm-up theo thứ tự để tránh đỉnh VRAM ở lần chạy đầu.
 - **CPU:** dùng WhisperX INT8 và HY-MT2 Q4. Chậm hơn nhưng vẫn hoạt động trên máy không có card rời.
-- **An toàn runtime:** app kiểm tra thiết bị hiện tại, không làm gián đoạn job đang chạy chỉ vì người dùng đổi preference, và có hướng xử lý khi GPU thực sự mất khả dụng.
+- **An toàn runtime:** app kiểm tra thiết bị hiện tại, không làm gián đoạn video đang chạy chỉ vì người dùng đổi preference, và có hướng xử lý khi GPU thực sự mất khả dụng.
 - **Dữ liệu trên ổ người dùng chọn:** `RUNTIME_DATA_DIR`, Hugging Face cache, Torch cache, pip/uv cache và file tạm đều có thể cấu hình. Thiết lập hiện tại dùng `D:\HaizFlowData` để không chiếm ổ C.
 
 ### Quyền riêng tư và chi phí
@@ -298,12 +294,8 @@ Copy-Item .env.example .env
 Chọn vị trí lưu dữ liệu trước khi tải model hoặc xử lý media lớn:
 
 ```env
+HAIZFLOW_HOME=D:\HaizFlowData
 RUNTIME_DATA_DIR=D:\HaizFlowData
-HF_HOME=D:\HaizFlowData\cache\huggingface
-TORCH_HOME=D:\HaizFlowData\cache\torch
-PIP_CACHE_DIR=D:\HaizFlowData\cache\pip
-UV_CACHE_DIR=D:\HaizFlowData\cache\uv
-HAIZFLOW_TMP_DIR=D:\HaizFlowData\cache\tmp
 ```
 
 ```powershell

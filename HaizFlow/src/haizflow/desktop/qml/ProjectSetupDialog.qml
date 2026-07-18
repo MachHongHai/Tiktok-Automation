@@ -154,7 +154,7 @@ Dialog {
                             anchors.fill: parent
                             anchors.leftMargin: 12
                             anchors.rightMargin: 12
-                            text: controller.projectDirectory
+                            text: AppController.projectDirectory
                             color: Theme.text
                             font.pixelSize: Theme.caption
                             verticalAlignment: Text.AlignVCenter
@@ -166,7 +166,7 @@ Dialog {
                     AppButton {
                         text: I18n.t("Browse")
                         iconGlyph: "\uE8B7"
-                        onClicked: controller.browseProjectDirectory()
+                        onClicked: AppController.browseProjectDirectory()
                     }
                 }
             }
@@ -193,9 +193,9 @@ Dialog {
                     text: I18n.t("Continue")
                     iconGlyph: "\uE76C"
                     tone: "primary"
-                    enabled: projectName.text.trim().length > 0 && controller.projectDirectory.length > 0
+                    enabled: projectName.text.trim().length > 0 && AppController.projectDirectory.length > 0
                     onClicked: {
-                        if (controller.prepareProject(projectName.text.trim(), controller.projectDirectory, root.projectType))
+                        if (AppController.prepareProject(projectName.text.trim(), AppController.projectDirectory, root.projectType))
                             root.close()
                     }
                 }

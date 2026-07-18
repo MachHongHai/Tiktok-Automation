@@ -30,7 +30,7 @@ Dialog {
         return String(minutes).padStart(2, "0") + ":" + String(seconds).padStart(2, "0")
     }
 
-    onOpened: segments = JSON.parse(JSON.stringify(controller.reviewSegments))
+    onOpened: segments = JSON.parse(JSON.stringify(AppController.reviewSegments))
 
     enter: Transition {
         ParallelAnimation {
@@ -122,6 +122,20 @@ Dialog {
 
                     width: ListView.view.width
                     height: editorColumn.implicitHeight + 24
+
+                    function resetEditorState() {
+                        translationEditor.focus = false
+                        translationEditor.deselect()
+                        translationEditor.cursorPosition = 0
+                    }
+
+                    function restoreEditorState() {
+                        translationEditor.text = modelData.text || ""
+                        resetEditorState()
+                    }
+
+                    ListView.onPooled: resetEditorState()
+                    ListView.onReused: restoreEditorState()
 
                     RowLayout {
                         anchors.left: parent.left
@@ -229,7 +243,7 @@ Dialog {
                 tone: "primary"
                 enabled: root.segments.length > 0
                 onClicked: {
-                    controller.approveTranslationReview(JSON.stringify(root.segments))
+                    AppController.approveTranslationReview(JSON.stringify(root.segments))
                     root.close()
                 }
             }

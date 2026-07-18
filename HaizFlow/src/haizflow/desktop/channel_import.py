@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import threading
+import time
 import uuid
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 
@@ -550,13 +551,18 @@ class ChannelImportCoordinator(QObject):
             self._refresh_active_model()
         return True
 
-    def shutdown(self) -> None:
+    def shutdown(self, timeout_seconds: float = 5.0) -> bool:
         self._prune_finished_runners()
         for event in self._cancel_events.values():
             event.set()
+        deadline = time.monotonic() + max(0.0, timeout_seconds)
         for thread in tuple(self._runner_threads.values()):
             if thread.is_alive():
-                thread.join(timeout=2)
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                thread.join(timeout=remaining)
+        return not any(thread.is_alive() for thread in self._runner_threads.values())
 
     def _handle_scan_resolved(self, session_id, payload):
         session = self._sessions.get(session_id)

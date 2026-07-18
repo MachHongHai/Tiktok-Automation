@@ -5,8 +5,8 @@ import subprocess
 
 from PySide6.QtCore import QUrl
 
-from haizflow.services import job_store
-from haizflow.services.desktop_jobs import SUPPORTED_VIDEO_EXTENSIONS
+from haizflow.services import video_store
+from haizflow.services.desktop_videos import SUPPORTED_VIDEO_EXTENSIONS
 
 
 def normalize_video_path(value) -> str:
@@ -55,24 +55,24 @@ def collect_batch_video_paths(paths):
     return valid_paths, invalid_names
 
 
-def resolve_job_file(job, keys, fallback_parts):
-    if not job:
+def resolve_video_file(video, keys, fallback_parts):
+    if not video:
         return ""
     for key in keys:
-        path = job.files.get(key)
+        path = video.files.get(key)
         if path and os.path.exists(path):
             return path
-    fallback = os.path.join(job_store.get_job_dir(job.job_id), *fallback_parts)
+    fallback = os.path.join(video_store.get_video_dir(video.video_id), *fallback_parts)
     if os.path.exists(fallback):
         return fallback
     if fallback_parts == ("input", "video.mp4"):
-        input_dir = os.path.join(job_store.get_job_dir(job.job_id), "input")
+        input_dir = os.path.join(video_store.get_video_dir(video.video_id), "input")
         if os.path.isdir(input_dir):
             for name in os.listdir(input_dir):
                 path = os.path.join(input_dir, name)
                 if os.path.isfile(path) and os.path.splitext(name)[1].lower() in {".mp4", ".mov", ".mkv", ".webm"}:
                     return path
-    return job.files.get(keys[0]) or fallback
+    return video.files.get(keys[0]) or fallback
 
 
 def create_video_thumbnail_path(path: str, output_path: str = "") -> str:

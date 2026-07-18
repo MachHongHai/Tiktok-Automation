@@ -153,11 +153,7 @@ QtObject {
         return source
     }
 
-    function t(source) {
-        if (language !== "vi")
-            return source
-
-        const vi = {
+    readonly property var vietnamese: ({
             "Workspace": "Không gian làm việc",
             "WORKSPACE": "KHÔNG GIAN LÀM VIỆC",
             "HaizFlow": "HaizFlow",
@@ -203,7 +199,6 @@ QtObject {
             "Live and upcoming streams are not supported.": "Chưa hỗ trợ video trực tiếp hoặc sắp phát.",
             "Open or create a project before downloading a video.": "Hãy mở hoặc tạo dự án trước khi tải video.",
             "Pause or finish the current video before replacing it.": "Hãy tạm dừng hoặc hoàn tất video hiện tại trước khi thay thế.",
-
             "Create project": "Tạo dự án",
             "Project name": "Tên dự án",
             "Project storage location": "Vị trí lưu dự án",
@@ -219,7 +214,6 @@ QtObject {
             "One source video per project": "Một video nguồn cho mỗi dự án",
             "Files, folders, links, or channels": "Tệp, thư mục, liên kết hoặc kênh",
             "No preview": "Chưa có hình xem trước",
-
             "Queued": "Đang chờ",
             "In progress": "Đang thực hiện",
             "Processing": "Đang xử lý",
@@ -235,7 +229,6 @@ QtObject {
             "cancelled": "Đã hủy",
             "paused": "Đã tạm dừng",
             "awaiting_review": "Cần duyệt bản dịch",
-
             "Batch queue": "Hàng đợi xử lý",
             "Batch project": "Dự án hàng loạt",
             "Process a video collection with one shared dubbing setup.": "Xử lý nhiều video bằng một thiết lập lồng tiếng dùng chung.",
@@ -343,7 +336,6 @@ QtObject {
             "Edit this size": "Chỉnh kích thước này",
             "Save video settings": "Lưu thiết lập video",
             "Unknown size": "Chưa xác định kích thước",
-
             "Prepare project": "Chuẩn bị dự án",
             "Extract audio": "Trích xuất âm thanh",
             "Separate vocals": "Tách giọng",
@@ -354,7 +346,6 @@ QtObject {
             "Mix audio timeline": "Phối âm thanh",
             "Render final video": "Kết xuất video",
             "Finish": "Hoàn tất",
-
             "Create a new dub": "Tạo video lồng tiếng mới",
             "Turn one source video into a translated, voiced and captioned export.": "Chuyển video nguồn thành bản dịch, giọng đọc và phụ đề hoàn chỉnh.",
             "Source media": "Video nguồn",
@@ -369,7 +360,6 @@ QtObject {
             "Replace with file": "Thay thế bằng tệp",
             "Replace from link": "Thay thế từ liên kết",
             "Edit subtitle frame": "Chỉnh khung phụ đề",
-
             "Dubbing setup": "Thiết lập lồng tiếng",
             "Language, voice and output behavior": "Ngôn ngữ, giọng đọc và cách xử lý âm thanh",
             "Workflow": "Quy trình",
@@ -388,17 +378,15 @@ QtObject {
             "Add to processing queue": "Đưa vào hàng đợi xử lý",
             "Create and process": "Tạo và xử lý",
             "Process": "Xử lý",
-
             "Activity log": "Nhật ký hoạt động",
             "Live processing output": "Nhật ký xử lý trực tiếp",
             "Logs will appear here while this project is processing.": "Nhật ký sẽ xuất hiện tại đây khi dự án đang được xử lý.",
             "No logs loaded.": "Chưa có nhật ký.",
-
             "Ready to process": "Sẵn sàng xử lý",
             "Prepare project": "Chuẩn bị dự án",
             "Last export ready": "Video xuất đã sẵn sàng",
             "Ready": "Sẵn sàng",
-            "No active job": "Không có video đang xử lý",
+            "No active video": "Không có video đang xử lý",
             "No video selected": "Chưa chọn video",
             "Settings applied": "Đã áp dụng cài đặt",
             "Settings reset to defaults": "Đã khôi phục cài đặt mặc định",
@@ -411,7 +399,7 @@ QtObject {
             "Loading HY-MT2 weights": "Đang tải trọng số HY-MT2",
             "HY-MT2 model is ready": "Model HY-MT2 đã sẵn sàng",
             "HY-MT2 Q4 CPU model is ready": "Model HY-MT2 Q4 cho CPU đã sẵn sàng",
-            "Preparing job": "Đang chuẩn bị video",
+            "Preparing video": "Đang chuẩn bị video",
             "Processing started": "Đã bắt đầu xử lý",
             "Queued to resume": "Đã đưa vào hàng đợi để tiếp tục",
             "Queued to restart": "Đã đưa vào hàng đợi để chạy lại",
@@ -457,7 +445,6 @@ QtObject {
             "Open project folder": "Mở thư mục dự án",
             "Remove video": "Xóa video",
             "Delete project": "Xóa dự án",
-
             "Appearance and language": "Giao diện và ngôn ngữ",
             "Appearance, language and performance": "Giao diện, ngôn ngữ và hiệu năng",
             "Theme": "Chủ đề",
@@ -527,11 +514,9 @@ QtObject {
             "CPU is recommended because GPU is unavailable or unsafe": "Khuyến nghị dùng CPU vì GPU không khả dụng hoặc chưa đủ an toàn",
             "Reset defaults": "Khôi phục mặc định",
             "Apply settings": "Áp dụng",
-
             "Approve and continue": "Duyệt và tiếp tục",
             "segments": "câu phụ đề",
             "Segment": "Câu",
-
             "Input Preview Editor": "Chỉnh khung phụ đề",
             "Subtitle frame editor": "Chỉnh khung phụ đề",
             "Video preview": "Xem trước video",
@@ -546,7 +531,12 @@ QtObject {
             "Save subtitle frame": "Lưu khung phụ đề",
             "Not available": "Chưa có",
             "Open video": "Mở video"
-        }
-        return vi[source] || source
+        })
+
+    function t(source) {
+        if (language !== "vi")
+            return source
+
+        return vietnamese[source] || source
     }
 }

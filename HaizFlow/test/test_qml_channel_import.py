@@ -55,10 +55,9 @@ class ChannelImportQmlTests(unittest.TestCase):
         engine = QQmlEngine()
         engine.addImportPath(str(QML_DIR))
         controller = _FakeController()
-        engine.rootContext().setContextProperty("controller", controller)
         component = QQmlComponent(engine, QUrl.fromLocalFile(str(QML_DIR / "ChannelImportPage.qml")))
         self.assertTrue(component.isReady(), "\n".join(error.toString() for error in component.errors()))
-        page = component.create()
+        page = component.createWithInitialProperties({"appController": controller})
         self.assertIsNotNone(page, "\n".join(error.toString() for error in component.errors()))
         try:
             self.app.processEvents()

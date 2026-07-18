@@ -9,7 +9,7 @@ Item {
     id: root
 
     signal requestBack()
-    signal openJobDetail()
+    signal openVideoDetail()
     signal requestBatchSettings()
     signal requestUrlImport()
     signal requestChannelImport()
@@ -36,8 +36,8 @@ Item {
             Layout.fillWidth: true
             Layout.minimumHeight: 58
             Layout.preferredHeight: 58
-            title: controller.projectName || I18n.t("Batch project")
-            subtitle: qsTr("%1 %2").arg(controller.batchCount).arg(I18n.t("videos"))
+            title: AppController.projectName || I18n.t("Batch project")
+            subtitle: qsTr("%1 %2").arg(AppController.batchCount).arg(I18n.t("videos"))
 
             AppButton {
                 text: I18n.t("Back")
@@ -50,40 +50,40 @@ Item {
                 text: I18n.t("Batch setup")
                 iconGlyph: "\uE713"
                 toolTipText: I18n.t("Configure this batch")
-                enabled: controller.batchCount > 0
+                enabled: AppController.batchCount > 0
                 onClicked: root.requestBatchSettings()
             }
 
             AppButton {
                 text: I18n.t("Open project folder")
                 iconGlyph: "\uE8B7"
-                enabled: controller.hasOpenProject
-                onClicked: controller.openProjectFolder()
+                enabled: AppController.hasOpenProject
+                onClicked: AppController.openProjectFolder()
             }
 
             AppButton {
                 text: I18n.t("Delete project")
                 iconGlyph: "\uE74D"
                 tone: "danger"
-                enabled: controller.hasOpenProject
-                onClicked: controller.deleteCurrentBatch()
+                enabled: AppController.hasOpenProject
+                onClicked: AppController.deleteCurrentBatch()
             }
 
             AppButton {
-                visible: !controller.isBatchRunning
+                visible: !AppController.isBatchRunning
                 text: I18n.t("Start queue")
                 iconGlyph: "\uE768"
                 tone: "primary"
-                enabled: controller.batchPendingCount > 0
-                onClicked: controller.startBatch()
+                enabled: AppController.batchPendingCount > 0
+                onClicked: AppController.startBatch()
             }
 
             AppButton {
-                visible: controller.isBatchRunning
+                visible: AppController.isBatchRunning
                 text: I18n.t("Stop queue")
                 iconGlyph: "\uE71A"
                 tone: "danger"
-                onClicked: controller.stopBatch()
+                onClicked: AppController.stopBatch()
             }
         }
 
@@ -104,7 +104,7 @@ Item {
                 InfoRow {
                     Layout.preferredWidth: 120
                     label: I18n.t("Videos")
-                    value: String(controller.batchCount)
+                    value: String(AppController.batchCount)
                 }
 
                 Rectangle {
@@ -116,7 +116,7 @@ Item {
                 InfoRow {
                     Layout.preferredWidth: 150
                     label: I18n.t("Completed")
-                    value: qsTr("%1 / %2").arg(controller.batchCompletedCount).arg(controller.batchCount)
+                    value: qsTr("%1 / %2").arg(AppController.batchCompletedCount).arg(AppController.batchCount)
                 }
 
                 Rectangle {
@@ -128,7 +128,7 @@ Item {
                 InfoRow {
                     Layout.preferredWidth: 260
                     label: I18n.t("Target")
-                    value: I18n.t(controller.batchTargetLanguageLabel)
+                    value: I18n.t(AppController.batchTargetLanguageLabel)
                 }
 
                 ColumnLayout {
@@ -140,15 +140,15 @@ Item {
 
                         Text {
                             Layout.fillWidth: true
-                            text: controller.isBatchRunning ? I18n.t("Queue processing") : I18n.t("Overall progress")
+                            text: AppController.isBatchRunning ? I18n.t("Queue processing") : I18n.t("Overall progress")
                             color: Theme.textMuted
                             font.pixelSize: Theme.caption
                             textFormat: Text.PlainText
                         }
 
                         Text {
-                            text: qsTr("%1%").arg(controller.batchProgress)
-                            color: controller.batchProgress >= 100 ? Theme.success : Theme.text
+                            text: qsTr("%1%").arg(AppController.batchProgress)
+                            color: AppController.batchProgress >= 100 ? Theme.success : Theme.text
                             font.pixelSize: Theme.caption
                             font.weight: Font.DemiBold
                             textFormat: Text.PlainText
@@ -157,7 +157,7 @@ Item {
 
                     AppProgressBar {
                         Layout.fillWidth: true
-                        value: controller.batchProgress
+                        value: AppController.batchProgress
                     }
                 }
             }
@@ -212,14 +212,14 @@ Item {
                 AppButton {
                     text: I18n.t("Add videos")
                     iconGlyph: "\uE710"
-                    onClicked: controller.browseBatchVideos()
+                    onClicked: AppController.browseBatchVideos()
                 }
 
                 AppButton {
                     text: I18n.t("Add folder")
                     iconGlyph: "\uE8B7"
                     tone: "secondary"
-                    onClicked: controller.browseBatchFolder()
+                    onClicked: AppController.browseBatchFolder()
                 }
 
                 AppButton {
@@ -254,7 +254,7 @@ Item {
                     var paths = []
                     for (var i = 0; i < drop.urls.length; i++)
                         paths.push(String(drop.urls[i]))
-                    controller.importBatchVideos(paths)
+                    AppController.importBatchVideos(paths)
                 }
             }
 
@@ -284,8 +284,8 @@ Item {
                 }
 
                 Text {
-                    visible: controller.batchCount > 0
-                    text: qsTr("%1 %2").arg(controller.batchCount).arg(I18n.t("items"))
+                    visible: AppController.batchCount > 0
+                    text: qsTr("%1 %2").arg(AppController.batchCount).arg(I18n.t("items"))
                     color: Theme.textMuted
                     font.pixelSize: Theme.caption
                     textFormat: Text.PlainText
@@ -304,9 +304,9 @@ Item {
                     id: queueList
 
                     anchors.fill: parent
-                    anchors.margins: controller.batchCount > 0 ? 10 : 0
+                    anchors.margins: AppController.batchCount > 0 ? 10 : 0
                     clip: true
-                    model: controller.batchJobModel
+                    model: AppController.batchVideoModel
                     reuseItems: true
                     cellWidth: Math.max(210, Math.floor((width - 16) / Math.max(2, Math.floor((width - 16) / 250))))
                     cellHeight: Math.round(cellWidth * 0.68 + 78)
@@ -315,8 +315,8 @@ Item {
                         width: queueList.cellWidth - Theme.space8
                         height: queueList.cellHeight - Theme.space8
                         onActivated: {
-                            controller.selectBatchJob(index)
-                            root.openJobDetail()
+                            AppController.selectBatchVideo(index)
+                            root.openVideoDetail()
                         }
                     }
 
@@ -329,7 +329,7 @@ Item {
                     anchors.centerIn: parent
                     width: Math.min(420, parent.width - 40)
                     spacing: Theme.space8
-                    visible: controller.batchCount === 0
+                    visible: AppController.batchCount === 0
 
                     AppIcon {
                         anchors.horizontalCenter: parent.horizontalCenter

@@ -2,7 +2,7 @@
 
 Tài liệu này là nguồn duy nhất theo dõi các rủi ro phát hành của ứng dụng Windows. Mỗi bản release phải cập nhật trạng thái, chạy toàn bộ release gate và lưu `BUILD-INFO.json` cùng `SHA256SUMS.txt` trong artifact.
 
-Ngày rà soát: 2026-07-16
+Ngày rà soát: 2026-07-18
 
 ## Quy ước trạng thái
 
@@ -18,14 +18,16 @@ Ngày rà soát: 2026-07-16
 | 2 | License và third-party compliance | **Runtime đã nâng cấp, còn legal gate** | Source code dùng Apache-2.0; FFmpeg đã nâng lên 8.1.2 Essentials, pin SHA-256 và kèm source archive có chữ ký. Build sinh notices từ đúng `.venv`. Trước khi công khai vẫn phải cung cấp corresponding source/build material của các thư viện GPL liên kết tĩnh và được người chịu trách nhiệm pháp lý duyệt. |
 | 3 | Frozen acceptance và artifact mới | **Hoàn tất và đã kiểm chứng** | Build xóa artifact cũ có kiểm soát, tạo metadata/checksum, chạy self-test, CPU runtime probe, GPU probe khi khả dụng và Qt/QML smoke với data tạm. Artifact ngày 2026-07-16 đã vượt qua toàn bộ gate. |
 | 4 | Installer, nâng cấp và code signing | **Chặn phát hành** | Có Inno Setup/WiX/MSIX, uninstall sạch, giữ project khi nâng cấp, version resource và chữ ký Authenticode hợp lệ. |
-| 5 | Khóa revision và checksum model | **Hoàn tất** | GPU repo khóa revision `9a341cd1…`, CPU repo khóa `1cd52087…`; GGUF và toàn bộ snapshot Transformers có size/SHA-256 cố định. Download, cache, model bundle, checkpoint và release metadata đều dùng revision này; model sai integrity bị từ chối. |
+| 5 | Khóa revision và checksum model | **Hoàn tất** | HY-MT2 GPU khóa `9a341cd1…`, HY-MT2 CPU khóa `1cd52087…`, Whisper small khóa `536b0662…`; các file model có size/SHA-256 cố định. Build mặc định nhúng cả ba model và frozen smoke xác minh integrity. |
 | 6 | Single-instance ứng dụng | **Hoàn tất** | `QLocalServer` tạo named pipe theo user. Instance thứ hai gửi yêu cầu activate rồi thoát; instance chính khôi phục cửa sổ. Stale server được xử lý và smoke mode không chiếm khóa. Khóa file/index là phạm vi riêng của ID 7. |
 | 7 | Phục hồi project index | **Hoàn tất** | `projects.json` được khóa liên tiến trình, ghi atomic, giữ last-known-good `.bak`, sao chép bản hỏng sang quarantine và rebuild từ manifest trong các project root đã đăng ký. Backup được hợp nhất với manifest mới hơn; lỗi không thể phục hồi chặn ghi thay vì tạo index rỗng. |
-| 8 | Schema migration | **Hoàn tất** | Project và video metadata dùng schema v4. Migration chạy tuần tự, lưu `.schema-migration.bak` trước khi ghi, bổ sung khóa project UUID bất biến, giữ nguyên project root legacy và từ chối schema tương lai để tránh downgrade dữ liệu. |
+| 8 | Schema migration | **Hoàn tất** | Project metadata dùng schema v4, video metadata dùng schema v5. Migration đổi `job.json`/`job_id` cũ thành `video.json`/`video_id`, lưu backup, giữ nguyên project root legacy và từ chối schema tương lai. |
 | 9 | Dependency lock tái lập | **Hoàn tất** | `requirements-lock-py313-win64.txt` khóa 137 dependency trực tiếp/gián tiếp bằng SHA-256 cho Windows x64/Python 3.13; Torch khóa đúng biến thể cu128. Manifest fingerprint phát hiện source/lock lệch, installer dùng `--require-hashes`, build gate đối chiếu toàn bộ `.venv`. |
 | 10 | Disk preflight và cache policy | **Còn lại** | Tính dung lượng theo component/model/video, kiểm tra trước tải/build và có cleanup UI. Mốc cố định 2 GB không đủ cho production. |
 | 11 | Mô tả offline và quyền riêng tư | **Chặn phát hành** | UI và README nói rõ WhisperX/HY-MT2 local, Edge TTS và tải URL cần mạng; có thông báo dữ liệu gửi ra ngoài và hành vi khi offline. |
 | 12 | Chẩn đoán production | **Còn lại** | Log rotation, Qt/thread exception hooks, build ID và chức năng export diagnostics có redaction. |
+| 13 | Shutdown và phục hồi video gián đoạn | **Hoàn tất** | Close event hỏi xác nhận khi còn xử lý/tải; active video được pause, subprocess tree bị dừng, queue từ chối việc mới và chờ worker. Windows Job Object dọn process con khi app crash; lần mở sau chuyển metadata `processing` còn sót thành `paused` có thể resume. Smoke mode luôn dùng data tạm thay vì `.env` thật. |
+| 14 | Portable storage theo thư mục cài đặt | **Hoàn tất** | `HAIZFLOW_HOME` là hard boundary; Qt/QML, Torch, Hugging Face, pip/uv, CUDA/Numba, temp, log, settings và model đều nằm dưới thư mục người dùng chọn. Source hiện dùng `D:\HaizFlowData`; smoke xác nhận không ghi lại `%LOCALAPPDATA%\HaizFlow`. |
 
 ## License gate
 
@@ -54,11 +56,11 @@ SHA256SUMS.txt
 
 Kết quả frozen bên dưới là mốc lịch sử trước khi hoàn thiện ID 5 và ID 6. Theo yêu cầu hiện tại, EXE chưa được build lại; do đó artifact cũ không được xem là release candidate cho source mới.
 
-Kết quả kiểm chứng source hiện tại (2026-07-16):
+Kết quả kiểm chứng source hiện tại (2026-07-18):
 
-- 113/113 unit và integration test thành công, gồm recovery, migration, dependency lock và khóa liên tiến trình.
+- 160/160 unit và integration test thành công, gồm shutdown/recovery, migration job-to-video, portable path containment, dependency lock và khóa liên tiến trình.
 - Qt/QML source smoke test thành công.
-- Runtime gate xác nhận đúng hai revision HY-MT2, CPU/GPU native runtime và FFmpeg.
+- Runtime gate xác nhận đúng ba revision model (Whisper, HY-MT2 CPU/GPU), CPU/GPU native runtime và FFmpeg.
 - Integration test liên tiến trình xác nhận instance thứ hai kích hoạt instance chính rồi thoát.
 
 Mốc frozen trước đó:
@@ -76,10 +78,11 @@ Build chuẩn:
 .\scripts\build-exe.ps1
 ```
 
-Build offline có model:
+Chuẩn bị model pinned và build offline (mặc định nhúng cả ba model):
 
 ```powershell
-.\scripts\build-exe.ps1 -IncludeCpuModel -IncludeGpuModel
+.\scripts\prepare-offline-models.ps1
+.\scripts\build-exe.ps1
 ```
 
 Quy trình bắt buộc của script:

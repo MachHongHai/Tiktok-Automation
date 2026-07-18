@@ -36,16 +36,16 @@ Item {
                 iconGlyph: "\uE72B"
                 tone: "secondary"
                 onClicked: {
-                    if (controller.isSelectedBatchJob && !controller.isSelectedJobProcessing)
-                        controller.saveSelectedJobSettings()
+                    if (AppController.isSelectedBatchVideo && !AppController.isSelectedVideoProcessing)
+                        AppController.saveSelectedVideoSettings()
                     root.requestBack()
                 }
             }
 
             PageHeader {
                 Layout.fillWidth: true
-                title: controller.projectName || controller.selectedFileName || I18n.t("Create a new dub")
-                subtitle: controller.projectDirectory || I18n.t("Turn one source video into a translated, voiced and captioned export.")
+                title: AppController.projectName || AppController.selectedFileName || I18n.t("Create a new dub")
+                subtitle: AppController.projectDirectory || I18n.t("Turn one source video into a translated, voiced and captioned export.")
             }
         }
 
@@ -100,7 +100,7 @@ Item {
             }
         }
 
-        JobCommandBar {
+        VideoCommandBar {
             Layout.fillWidth: true
             onRequestReviewTranslation: root.requestReviewTranslation()
         }

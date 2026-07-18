@@ -373,9 +373,9 @@ class CpuRuntimeTests(unittest.TestCase):
             mock.patch.object(audio_separation, "register_process"),
             mock.patch.object(audio_separation, "unregister_process"),
             mock.patch.object(audio_separation, "check_cancellation"),
-            mock.patch.object(audio_separation, "log_to_job"),
+            mock.patch.object(audio_separation, "log_to_video"),
         ):
-            audio_separation.separate_audio("audio.wav", "out", "job")
+            audio_separation.separate_audio("audio.wav", "out", "video")
 
         command = captured["command"]
         self.assertEqual(command[command.index("-j") + 1], "1")

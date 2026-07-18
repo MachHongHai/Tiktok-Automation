@@ -3,9 +3,9 @@ import subprocess
 
 import srt
 
-from haizflow.pipeline.job_manager import check_cancellation, register_process, unregister_process
-from haizflow.schemas.job import CropSettings, SubtitleStyle
-from haizflow.services.job_store import log_to_job
+from haizflow.pipeline.process_registry import check_cancellation, register_process, unregister_process
+from haizflow.schemas.video import CropSettings, SubtitleStyle
+from haizflow.services.video_store import log_to_video
 from haizflow.utils.ffmpeg import get_video_dimensions, get_video_duration, preferred_video_encoder
 
 
@@ -81,10 +81,10 @@ def _ffmpeg_path(path: str, working_dir: str) -> str:
         return os.path.abspath(path).replace("\\", "/")
 
 
-def render_video(video_path: str, voice_wav_path: str, srt_path: str, output_path: str, output_format: str, subtitle_style: SubtitleStyle, crop: CropSettings, job_id: str):
+def render_video(video_path: str, voice_wav_path: str, srt_path: str, output_path: str, output_format: str, subtitle_style: SubtitleStyle, crop: CropSettings, video_id: str):
     """Render cropped video, positioned subtitles, and dubbed audio with FFmpeg."""
-    log_to_job(job_id, f"Starting video render. Format selected: '{output_format}'")
-    job_temp_dir = os.path.dirname(os.path.abspath(srt_path))
+    log_to_video(video_id, f"Starting video render. Format selected: '{output_format}'")
+    video_temp_dir = os.path.dirname(os.path.abspath(srt_path))
     source_width, source_height = get_video_dimensions(video_path)
     if output_format in {"tiktok_9_16_crop", "blur_background_9_16"}:
         subtitle_width, subtitle_height = 1080, 1920
@@ -92,12 +92,12 @@ def render_video(video_path: str, voice_wav_path: str, srt_path: str, output_pat
         subtitle_width = max(2, int(source_width * 100 / crop.zoom_percent) // 2 * 2)
         subtitle_height = max(2, int(source_height * 100 / crop.zoom_percent) // 2 * 2)
 
-    ass_path = os.path.join(job_temp_dir, "positioned_subtitles.ass")
+    ass_path = os.path.join(video_temp_dir, "positioned_subtitles.ass")
     _write_positioned_ass(srt_path, ass_path, subtitle_style, subtitle_width, subtitle_height)
-    rel_video = _ffmpeg_path(video_path, job_temp_dir)
-    rel_voice = _ffmpeg_path(voice_wav_path, job_temp_dir)
-    rel_ass = _ffmpeg_path(ass_path, job_temp_dir)
-    rel_output = _ffmpeg_path(output_path, job_temp_dir)
+    rel_video = _ffmpeg_path(video_path, video_temp_dir)
+    rel_voice = _ffmpeg_path(voice_wav_path, video_temp_dir)
+    rel_ass = _ffmpeg_path(ass_path, video_temp_dir)
+    rel_output = _ffmpeg_path(output_path, video_temp_dir)
     ass_filter_path = rel_ass.replace(":", "\\:").replace("'", "'\\\\''")
     ass_filter = f"ass='{ass_filter_path}'"
     filters = []
@@ -130,20 +130,20 @@ def render_video(video_path: str, voice_wav_path: str, srt_path: str, output_pat
 
     def run_render(encoder: str, encoder_args: list[str]):
         command = cmd_prefix + ["-c:v", encoder, *encoder_args, *audio_args]
-        log_to_job(job_id, f"Running FFmpeg render with {encoder} in Cwd: {job_temp_dir}")
-        check_cancellation(job_id)
-        process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, cwd=job_temp_dir)
-        register_process(job_id, process)
+        log_to_video(video_id, f"Running FFmpeg render with {encoder} in Cwd: {video_temp_dir}")
+        check_cancellation(video_id)
+        process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, cwd=video_temp_dir)
+        register_process(video_id, process)
         _stdout, process_stderr = process.communicate()
-        unregister_process(job_id, process)
-        check_cancellation(job_id)
+        unregister_process(video_id, process)
+        check_cancellation(video_id)
         return process.returncode, process_stderr
 
     return_code, stderr = run_render(video_encoder, video_encoder_args)
     if return_code != 0 and video_encoder != "libx264":
-        log_to_job(job_id, f"Hardware encoder {video_encoder} failed; retrying with libx264.")
+        log_to_video(video_id, f"Hardware encoder {video_encoder} failed; retrying with libx264.")
         return_code, stderr = run_render("libx264", ["-preset", "veryfast", "-crf", "23"])
     if return_code != 0:
-        log_to_job(job_id, f"FFmpeg Render Error output:\n{stderr}")
+        log_to_video(video_id, f"FFmpeg Render Error output:\n{stderr}")
         raise RuntimeError(f"FFmpeg render failed with exit code {return_code}")
-    log_to_job(job_id, f"Successfully rendered final video to: {output_path}")
+    log_to_video(video_id, f"Successfully rendered final video to: {output_path}")

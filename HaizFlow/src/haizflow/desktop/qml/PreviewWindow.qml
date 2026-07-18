@@ -11,10 +11,10 @@ Window {
     height: 840
     minimumWidth: 900
     minimumHeight: 620
-    title: I18n.t(controller.previewTitle)
+    title: I18n.t(AppController.previewTitle)
     color: Theme.window
 
-    property real videoRatio: Math.max(0.1, controller.previewAspectRatio)
+    property real videoRatio: Math.max(0.1, AppController.previewAspectRatio)
     property bool showPoster: false
     property bool userPlaybackRequested: false
     property bool editHandled: false
@@ -25,8 +25,8 @@ Window {
 
     onClosing: {
         player.stop()
-        if (controller.previewInteractive && !editHandled)
-            controller.cancelPreviewEdits()
+        if (AppController.previewInteractive && !editHandled)
+            AppController.cancelPreviewEdits()
     }
     onVisibleChanged: {
         if (!visible) {
@@ -41,8 +41,8 @@ Window {
     function openFromController() {
         player.stop()
         player.source = ""
-        player.source = controller.previewSource
-        showPoster = controller.previewPosterSource.length > 0
+        player.source = AppController.previewSource
+        showPoster = AppController.previewPosterSource.length > 0
         userPlaybackRequested = false
         editHandled = false
         editsSaved = false
@@ -114,7 +114,7 @@ Window {
                 AppIcon {
                     Layout.preferredWidth: 30
                     Layout.preferredHeight: 30
-                    glyph: controller.previewInteractive ? "\uE70F" : "\uE714"
+                    glyph: AppController.previewInteractive ? "\uE70F" : "\uE714"
                     iconColor: Theme.interactive
                     iconSize: Theme.iconLarge
                 }
@@ -125,7 +125,7 @@ Window {
 
                     Text {
                         Layout.fillWidth: true
-                        text: I18n.t(controller.previewTitle)
+                        text: I18n.t(AppController.previewTitle)
                         color: Theme.text
                         font.pixelSize: Theme.h2
                         font.weight: Font.DemiBold
@@ -135,7 +135,7 @@ Window {
 
                     Text {
                         Layout.fillWidth: true
-                        text: controller.previewInteractive
+                        text: AppController.previewInteractive
                             ? I18n.t("Subtitle placement")
                             : I18n.t("Output preview")
                         color: Theme.textMuted
@@ -152,13 +152,13 @@ Window {
                 }
 
                 AppButton {
-                    visible: controller.previewInteractive
-                    text: I18n.t(controller.previewSaveLabel)
+                    visible: AppController.previewInteractive
+                    text: I18n.t(AppController.previewSaveLabel)
                     iconGlyph: "\uE74E"
                     tone: "primary"
                     enabled: !root.editsSaved
                     onClicked: {
-                        if (controller.commitPreviewEdits()) {
+                        if (AppController.commitPreviewEdits()) {
                             root.editHandled = true
                             root.editsSaved = true
                         }
@@ -170,8 +170,8 @@ Window {
                     iconGlyph: "\uE711"
                     tone: "ghost"
                     onClicked: {
-                        if (controller.previewInteractive)
-                            controller.cancelPreviewEdits()
+                        if (AppController.previewInteractive)
+                            AppController.cancelPreviewEdits()
                         root.editHandled = true
                         root.close()
                     }
@@ -221,7 +221,7 @@ Window {
                     Image {
                         id: posterFrame
                         anchors.fill: parent
-                        source: controller.previewPosterSource
+                        source: AppController.previewPosterSource
                         sourceSize.width: Math.round(contentArea.width)
                         sourceSize.height: Math.round(contentArea.height)
                         fillMode: Image.PreserveAspectFit
@@ -237,7 +237,7 @@ Window {
                         id: subtitleBox
                         onEdited: function(xPercent, yPercent, widthPercent, heightPercent, fontSize) {
                             root.editsSaved = false
-                            controller.updatePreviewEdits(xPercent, yPercent, widthPercent, heightPercent, fontSize)
+                            AppController.updatePreviewEdits(xPercent, yPercent, widthPercent, heightPercent, fontSize)
                         }
                     }
                 }

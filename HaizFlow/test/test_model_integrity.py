@@ -13,6 +13,9 @@ class ModelIntegrityTests(unittest.TestCase):
         self.assertRegex(model_integrity.HYMT2_GPU_REVISION, r"^[0-9a-f]{40}$")
         self.assertRegex(model_integrity.HYMT2_CPU_REVISION, r"^[0-9a-f]{40}$")
         self.assertRegex(model_integrity.HYMT2_CPU_SHA256, r"^[0-9a-f]{64}$")
+        self.assertRegex(model_integrity.WHISPER_REVISION, r"^[0-9a-f]{40}$")
+        for _name, (_size, digest) in model_integrity.WHISPER_FILES.items():
+            self.assertRegex(digest, r"^[0-9a-f]{64}$")
 
     def test_integrity_marker_avoids_rehashing_unchanged_model(self):
         with tempfile.TemporaryDirectory() as temporary:

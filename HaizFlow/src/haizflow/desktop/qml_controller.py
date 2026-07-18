@@ -6,7 +6,8 @@ import threading
 from collections import Counter
 from datetime import datetime, timezone
 
-from PySide6.QtCore import QObject, Property, QTimer, QUrl, Signal, Slot
+from PySide6.QtCore import QEvent, QObject, Property, QTimer, QUrl, Signal, Slot
+from PySide6.QtQml import QmlNamedElement, QmlSingleton
 
 from haizflow.desktop.catalog import POPULAR_TARGET_LANGUAGES
 from haizflow.desktop.channel_import import ChannelImportCoordinator
@@ -16,10 +17,10 @@ from haizflow.desktop.media import (
     create_video_thumbnail_path,
     normalize_video_path,
     open_path,
-    resolve_job_file,
+    resolve_video_file,
     thumbnail_source,
 )
-from haizflow.desktop.models import JobListModel, ProjectListModel, TaskListModel
+from haizflow.desktop.models import VideoListModel, ProjectListModel, TaskListModel
 from haizflow.desktop.presenters import (
     build_project_summaries,
     format_duration,
@@ -41,17 +42,24 @@ from haizflow.core.hardware import (
     validate_processing_device,
 )
 from haizflow.core.runtime_probe import probe_runtime
-from haizflow.pipeline.job_manager import cancel_job, pause_job
-from haizflow.schemas.job import CropSettings, JobConfig, SubtitleStyle
-from haizflow.services import desktop_settings, job_store, project_store
+from haizflow.pipeline.process_registry import cancel_video, pause_video
+from haizflow.schemas.video import CropSettings, VideoConfig, SubtitleStyle
+from haizflow.services import desktop_settings, video_store, project_store
 from haizflow.services.channel_import import normalize_remote_url
-from haizflow.services.desktop_jobs import create_desktop_job, migrate_legacy_single_export
+from haizflow.services.desktop_videos import create_desktop_video, migrate_legacy_single_export
 from haizflow.services.processing_queue import SerialProcessingQueue
 from haizflow.services.translation import shutdown_hymt2_worker, warm_hymt2_worker
 from haizflow.utils.ffmpeg import get_video_dimensions
 
+QML_IMPORT_NAME = "HaizFlow"
+QML_IMPORT_MAJOR_VERSION = 1
 
+
+@QmlNamedElement("AppController")
+@QmlSingleton
 class HaizFlowController(QObject):
+    _qml_instance = None
+
     videoPathChanged = Signal()
     videoThumbnailChanged = Signal()
     targetLanguageChanged = Signal()
@@ -60,13 +68,13 @@ class HaizFlowController(QObject):
     enableAudioSeparationChanged = Signal()
     originalVolumeChanged = Signal()
     workflowModeChanged = Signal()
-    selectedJobChanged = Signal()
+    selectedVideoChanged = Signal()
     processingChanged = Signal()
     logsChanged = Signal()
     statusMessageChanged = Signal()
     previewChanged = Signal()
     previewOpenRequested = Signal()
-    jobDeleted = Signal()
+    videoDeleted = Signal()
     batchDeleted = Signal()
     batchChanged = Signal()
     settingsChanged = Signal()
@@ -78,11 +86,12 @@ class HaizFlowController(QObject):
 
     def __init__(self):
         super().__init__()
-        self.jobs = JobListModel()
+        type(self)._qml_instance = self
+        self.videos = VideoListModel()
         self.projects = ProjectListModel()
         self.single_projects = ProjectListModel()
         self.batch_projects = ProjectListModel()
-        self.batch_jobs = JobListModel()
+        self.batch_videos = VideoListModel()
         self.tasks = TaskListModel()
         self._video_path = ""
         self._video_thumbnail_source = ""
@@ -91,22 +100,25 @@ class HaizFlowController(QObject):
         self._enable_audio_separation = False
         self._original_volume = 60
         self._workflow_mode = "A"
-        self._selected_job_id = None
+        self._selected_video_id = None
         self._selected_project_key = ""
         self._device_switching = False
         self._pending_processing_device = ""
         self._model_runtime_lock = threading.Lock()
         self._initial_model_warmup_done = threading.Event()
         self._runtime_probe_error = ""
-        self._deleted_job_ids = set()
+        self._deleted_video_ids = set()
+        self._shutdown_started = False
+        self._close_confirmed = False
+        self._warmup_thread: threading.Thread | None = None
         self._processing_queue = SerialProcessingQueue(
             self._execute_pipeline,
-            on_started=self._on_queue_job_started,
-            on_finished=self._on_queue_job_finished,
+            on_started=self._on_queue_video_started,
+            on_finished=self._on_queue_video_finished,
             on_idle=self._on_processing_queue_idle,
             on_error=self._on_processing_queue_error,
         )
-        self._batch_job_ids = []
+        self._batch_video_ids = []
         self._batch_running = False
         self._batch_stop_requested = False
         self._logs = ""
@@ -122,7 +134,7 @@ class HaizFlowController(QObject):
         self._preview_interactive = False
         self._preview_aspect_ratio = 16 / 9
         self._preview_edit_scope = "draft"
-        self._preview_target_job_ids = []
+        self._preview_target_video_ids = []
         self._preview_group_keys = []
         self._preview_group_index = -1
         self._preview_original_style = None
@@ -166,49 +178,129 @@ class HaizFlowController(QObject):
         self._url_importer.importFinished.connect(self.urlImportFinished.emit)
         self._channel_importer = ChannelImportCoordinator(self)
         self._channel_importer.set_worker_limit_provider(
-            lambda: 1 if self._processing_queue.active_job_id else 2
+            lambda: 1 if self._processing_queue.active_video_id else 2
         )
         self._channel_import_targets = {}
         self._channel_importer.videoReady.connect(self._handle_channel_video_ready)
         self._channel_importer.downloadsFinished.connect(self._finish_channel_import_target)
 
-        migrated_video_data = job_store.migrate_legacy_project_data()
+        migrated_video_data = video_store.migrate_legacy_project_data()
         if migrated_video_data:
             self._status_message = f"Organized {len(migrated_video_data)} video workspace(s) into their projects."
+        recovered_videos = video_store.recover_interrupted_videos()
+        if recovered_videos:
+            self._status_message = (
+                f"Recovered {len(recovered_videos)} interrupted video(s). "
+                "They are paused and ready to resume."
+            )
         self._migrate_legacy_project_thumbnails()
 
         if os.getenv("HAIZFLOW_SMOKE_TEST") == "1":
             self._initial_model_warmup_done.set()
         else:
-            threading.Thread(
+            self._warmup_thread = threading.Thread(
                 target=self._warm_models_at_startup,
                 name="haizflow-model-warmup",
                 daemon=True,
-            ).start()
+            )
+            self._warmup_thread.start()
 
-        subscribe_log(self._on_job_log)
+        subscribe_log(self._on_video_log)
         self._log_timer = QTimer(self)
         self._log_timer.timeout.connect(self._drain_log_queue)
         self._log_timer.start(250)
 
         self._status_timer = QTimer(self)
-        self._status_timer.timeout.connect(self.poll_jobs)
+        self._status_timer.timeout.connect(self.poll_videos)
         self._status_timer.start(1000)
 
         self._hardware_timer = QTimer(self)
         self._hardware_timer.timeout.connect(self._refresh_live_hardware)
         self._hardware_timer.start(3000)
 
-        self.refreshJobs()
+        self.refreshVideos()
+
+    def eventFilter(self, watched, event):
+        if event.type() == QEvent.Type.Close and not self._close_confirmed:
+            if not self._confirm_application_close():
+                event.ignore()
+                return True
+        return super().eventFilter(watched, event)
+
+    def _confirm_application_close(self) -> bool:
+        background_work = (
+            self._processing_queue.has_work
+            or self._url_importer.busy
+            or self._channel_importer.busy
+        )
+        if not background_work:
+            self._close_confirmed = True
+            return True
+        answer = QMessageBox.question(
+            None,
+            "Exit HaizFlow",
+            "HaizFlow is still processing or downloading media.\n\n"
+            "Exit now? The active video will be paused, active downloads will be cancelled, "
+            "and queued videos will remain available for later.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Cancel,
+        )
+        self._close_confirmed = answer == QMessageBox.StandardButton.Yes
+        return self._close_confirmed
 
     def shutdown(self):
-        from haizflow.pipeline.transcribe import release_warm_whisperx_model
+        if self._shutdown_started:
+            return
+        self._shutdown_started = True
+        self._initial_model_warmup_done.set()
+        unsubscribe_log(self._on_video_log)
+
+        active_video_id = self._processing_queue.active_video_id
+        active_video = video_store.get_video(active_video_id) if active_video_id else None
+        if active_video and active_video.status in {"pending", "processing"}:
+            resume_step = active_video.resume_step or active_video.step or "processing"
+            if resume_step in {"pending", "queued", "paused"}:
+                resume_step = "starting"
+            pause_video(active_video_id)
+            video_store.update_video(
+                active_video_id,
+                status="paused",
+                error=None,
+                step="paused",
+                resume_step=resume_step,
+                step_detail=f"Paused during application exit ({resume_step})",
+                estimated_remaining_seconds=None,
+            )
+            video_store.log_to_video(
+                active_video_id,
+                "Application exit requested. Active subprocesses were stopped and the video was paused.",
+            )
+
+        for video_id in self._processing_queue.pending_ids():
+            queued_video = video_store.get_video(video_id)
+            if queued_video and queued_video.status == "pending":
+                video_store.update_video(
+                    video_id,
+                    step="queued",
+                    step_detail="Waiting to be started after the application exited",
+                )
 
         self._url_importer.shutdown()
         self._channel_importer.shutdown()
-        unsubscribe_log(self._on_job_log)
+        queue_stopped = self._processing_queue.shutdown(timeout_seconds=10.0)
         shutdown_hymt2_worker()
-        release_warm_whisperx_model()
+        if not queue_stopped:
+            queue_stopped = self._processing_queue.shutdown(timeout_seconds=2.0)
+
+        warmup_thread = self._warmup_thread
+        if warmup_thread and warmup_thread.is_alive():
+            warmup_thread.join(timeout=1.0)
+        if queue_stopped and not (warmup_thread and warmup_thread.is_alive()):
+            from haizflow.pipeline.transcribe import release_warm_whisperx_model
+
+            release_warm_whisperx_model()
+        if HaizFlowController._qml_instance is self:
+            HaizFlowController._qml_instance = None
 
     def _warm_models(self):
         with self._model_runtime_lock:
@@ -326,9 +418,9 @@ class HaizFlowController(QObject):
 
     def _pipeline_is_active(self) -> bool:
         """Return whether a video is currently inside the serial worker."""
-        return bool(self._processing_queue.active_job_id)
+        return bool(self._processing_queue.active_video_id)
 
-    def _activate_pending_device_for_next_job(self, job_id: str) -> None:
+    def _activate_pending_device_for_next_video(self, video_id: str) -> None:
         """Switch only between two queued videos, never during a pipeline."""
         preference = self._pending_processing_device
         if preference not in {"cpu", "gpu"}:
@@ -354,11 +446,11 @@ class HaizFlowController(QObject):
                 )
             except OSError:
                 pass
-            job_store.log_to_job(job_id, f"Requested GPU runtime is no longer safe: {message} Falling back to CPU.")
+            video_store.log_to_video(video_id, f"Requested GPU runtime is no longer safe: {message} Falling back to CPU.")
 
         probe = probe_runtime(preference)
         if not probe.ok and preference == "gpu":
-            job_store.log_to_job(job_id, f"GPU runtime validation failed: {probe.message} Falling back to CPU.")
+            video_store.log_to_video(video_id, f"GPU runtime validation failed: {probe.message} Falling back to CPU.")
             preference = "cpu"
             probe = probe_runtime("cpu")
             self._settings_processing_device = "cpu"
@@ -376,7 +468,7 @@ class HaizFlowController(QObject):
                 pass
         if not probe.ok:
             self._runtime_probe_error = probe.message
-            job_store.log_to_job(job_id, f"Processing runtime validation failed: {probe.message}")
+            video_store.log_to_video(video_id, f"Processing runtime validation failed: {probe.message}")
             return
 
         try:
@@ -390,15 +482,15 @@ class HaizFlowController(QObject):
             self._active_processing_device = preference
             self._runtime_probe_error = ""
             self._pending_processing_device = ""
-            job_store.log_to_job(job_id, f"Using the updated {preference.upper()} runtime for this video.")
+            video_store.log_to_video(video_id, f"Using the updated {preference.upper()} runtime for this video.")
         except Exception as exc:
-            job_store.log_to_job(job_id, f"Could not apply the updated processing device: {exc}")
+            video_store.log_to_video(video_id, f"Could not apply the updated processing device: {exc}")
 
     def _refresh_live_hardware(self):
         """Keep Settings telemetry live without changing a pipeline mid-video."""
         capabilities = detect_hardware_capabilities()
         recommended_device = recommended_processing_device(capabilities)
-        # The pipeline can force a single job onto CPU after a GPU fault. Once
+        # The pipeline can force a single video onto CPU after a GPU fault. Once
         # the queue is idle, persist that runtime choice so Settings never
         # claims that GPU is active while the app is actually using CPU.
         runtime_fallback_device = processing_device_preference()
@@ -450,8 +542,8 @@ class HaizFlowController(QObject):
         self.statusMessageChanged.emit()
 
     @Property(QObject, constant=True)
-    def jobModel(self):
-        return self.jobs
+    def videoModel(self):
+        return self.videos
 
     @Property(QObject, constant=True)
     def projectModel(self):
@@ -470,44 +562,44 @@ class HaizFlowController(QObject):
         return self._channel_importer
 
     @Property(QObject, constant=True)
-    def batchJobModel(self):
-        return self.batch_jobs
+    def batchVideoModel(self):
+        return self.batch_videos
 
     @Property(bool, notify=batchChanged)
     def isBatchRunning(self):
-        return any(self._processing_queue.contains(job_id) for job_id in self._batch_job_ids)
+        return any(self._processing_queue.contains(video_id) for video_id in self._batch_video_ids)
 
     @Property(int, notify=batchChanged)
     def batchCount(self):
-        return len(self._batch_job_ids)
+        return len(self._batch_video_ids)
 
     @Property(int, notify=batchChanged)
     def batchCompletedCount(self):
         completed_states = {"done", "failed", "cancelled"}
-        jobs = [job_store.get_job(job_id) for job_id in self._batch_job_ids]
-        return sum(1 for job in jobs if job and job.status in completed_states)
+        videos = [video_store.get_video(video_id) for video_id in self._batch_video_ids]
+        return sum(1 for video in videos if video and video.status in completed_states)
 
     @Property(int, notify=batchChanged)
     def batchPendingCount(self):
-        jobs = [job_store.get_job(job_id) for job_id in self._batch_job_ids]
+        videos = [video_store.get_video(video_id) for video_id in self._batch_video_ids]
         return sum(
             1
-            for job in jobs
-            if job and job.status == "pending" and not self._processing_queue.contains(job.job_id)
+            for video in videos
+            if video and video.status == "pending" and not self._processing_queue.contains(video.video_id)
         )
 
     @Property(int, notify=batchChanged)
     def batchProgress(self):
-        jobs = [job_store.get_job(job_id) for job_id in self._batch_job_ids]
-        jobs = [job for job in jobs if job]
-        return round(sum(job.progress for job in jobs) / len(jobs)) if jobs else 0
+        videos = [video_store.get_video(video_id) for video_id in self._batch_video_ids]
+        videos = [video for video in videos if video]
+        return round(sum(video.progress for video in videos) / len(videos)) if videos else 0
 
     @Property(str, notify=batchChanged)
     def batchTargetLanguageLabel(self):
-        if not self._batch_job_ids:
+        if not self._batch_video_ids:
             return self._language_label(self._target_language)
-        jobs = [job_store.get_job(job_id) for job_id in self._batch_job_ids]
-        languages = {job.target_language for job in jobs if job}
+        videos = [video_store.get_video(video_id) for video_id in self._batch_video_ids]
+        languages = {video.target_language for video in videos if video}
         if len(languages) > 1:
             return "Mixed settings"
         return self._language_label(next(iter(languages))) if languages else self._language_label(self._target_language)
@@ -518,9 +610,9 @@ class HaizFlowController(QObject):
             {
                 "sizeKey": group["size_key"],
                 "label": group["label"],
-                "count": len(group["jobs"]),
-                "customizedCount": sum(1 for job in group["jobs"] if job.subtitle_override),
-                "thumbnailSource": JobListModel._thumbnail_source(group["jobs"][0]),
+                "count": len(group["videos"]),
+                "customizedCount": sum(1 for video in group["videos"] if video.subtitle_override),
+                "thumbnailSource": VideoListModel._thumbnail_source(group["videos"][0]),
             }
             for group in self._batch_dimension_groups()
         ]
@@ -543,8 +635,8 @@ class HaizFlowController(QObject):
             return
         self._video_path = value
         thumbnail_path = (
-            self._job_thumbnail_path(self._selected_job_id)
-            if self._selected_job_id
+            self._video_thumbnail_path(self._selected_video_id)
+            if self._selected_video_id
             else self._draft_thumbnail_path()
         )
         self._video_thumbnail_source = self._create_video_thumbnail(value, thumbnail_path)
@@ -655,38 +747,38 @@ class HaizFlowController(QObject):
         return self._processing_queue.has_work or self._device_switching
 
     @Property(bool, notify=processingChanged)
-    def isSelectedJobProcessing(self):
+    def isSelectedVideoProcessing(self):
         return bool(
-            self._selected_job_id
-            and self._selected_job_id == self._processing_queue.active_job_id
+            self._selected_video_id
+            and self._selected_video_id == self._processing_queue.active_video_id
         )
 
-    @Property(bool, notify=selectedJobChanged)
-    def isSelectedJobQueued(self):
-        return bool(self._selected_job_id and self._processing_queue.contains(self._selected_job_id))
+    @Property(bool, notify=selectedVideoChanged)
+    def isSelectedVideoQueued(self):
+        return bool(self._selected_video_id and self._processing_queue.contains(self._selected_video_id))
 
-    @Property(bool, notify=selectedJobChanged)
-    def canEditSelectedJob(self):
+    @Property(bool, notify=selectedVideoChanged)
+    def canEditSelectedVideo(self):
         """Only freeze the video whose immutable pipeline snapshot is queued."""
         return not (
-            self._selected_job_id
-            and self._processing_queue.contains(self._selected_job_id)
+            self._selected_video_id
+            and self._processing_queue.contains(self._selected_video_id)
         )
 
     @Property(str, notify=processingChanged)
     def processingText(self):
-        active_job_id = self._processing_queue.active_job_id
-        job = job_store.get_job(active_job_id) if active_job_id else None
-        return f"{job.original_filename} | {job.step_detail or job.status}" if job else "No active job"
+        active_video_id = self._processing_queue.active_video_id
+        video = video_store.get_video(active_video_id) if active_video_id else None
+        return f"{video.original_filename} | {video.step_detail or video.status}" if video else "No active video"
 
-    @Property(str, notify=selectedJobChanged)
+    @Property(str, notify=selectedVideoChanged)
     def selectedTitle(self):
-        job = job_store.get_job(self._selected_job_id) if self._selected_job_id else None
-        return f"{job.original_filename} | {job.status}" if job else "No video selected"
+        video = video_store.get_video(self._selected_video_id) if self._selected_video_id else None
+        return f"{video.original_filename} | {video.status}" if video else "No video selected"
 
-    @Property(bool, notify=selectedJobChanged)
-    def hasSelectedJob(self):
-        return self._selected_job_id is not None and job_store.get_job(self._selected_job_id) is not None
+    @Property(bool, notify=selectedVideoChanged)
+    def hasSelectedVideo(self):
+        return self._selected_video_id is not None and video_store.get_video(self._selected_video_id) is not None
 
     @Property(bool, notify=projectSetupChanged)
     def hasOpenProject(self):
@@ -698,59 +790,59 @@ class HaizFlowController(QObject):
             return False
 
     @staticmethod
-    def _job_project_key(job) -> str:
-        key = str(getattr(job, "project_key", "") or "")
+    def _video_project_key(video) -> str:
+        key = str(getattr(video, "project_key", "") or "")
         if key:
             return key
         return project_store.resolve_project_key(
-            str(getattr(job, "project_name", "") or ""),
-            str(getattr(job, "project_directory", "") or ""),
-            "batch" if getattr(job, "project_type", "single") == "batch" else "single",
+            str(getattr(video, "project_name", "") or ""),
+            str(getattr(video, "project_directory", "") or ""),
+            "batch" if getattr(video, "project_type", "single") == "batch" else "single",
         )
 
     def _selected_project_root(self) -> str:
         return project_store.project_root_for_key(self._selected_project_key)
 
-    @Property(bool, notify=selectedJobChanged)
-    def isSelectedBatchJob(self):
-        job = job_store.get_job(self._selected_job_id) if self._selected_job_id else None
-        return bool(job and job.project_type == "batch" and job.job_id in self._batch_job_ids)
+    @Property(bool, notify=selectedVideoChanged)
+    def isSelectedBatchVideo(self):
+        video = video_store.get_video(self._selected_video_id) if self._selected_video_id else None
+        return bool(video and video.project_type == "batch" and video.video_id in self._batch_video_ids)
 
-    @Property("QVariantList", notify=selectedJobChanged)
+    @Property("QVariantList", notify=selectedVideoChanged)
     def reviewSegments(self):
-        job = job_store.get_job(self._selected_job_id) if self._selected_job_id else None
-        if not job or job.status != "awaiting_review":
+        video = video_store.get_video(self._selected_video_id) if self._selected_video_id else None
+        if not video or video.status != "awaiting_review":
             return []
         try:
-            with open(job.files["transcript_json"], "r", encoding="utf-8") as file:
+            with open(video.files["transcript_json"], "r", encoding="utf-8") as file:
                 return json.load(file)
         except (OSError, json.JSONDecodeError):
             return []
 
-    @Property(str, notify=selectedJobChanged)
+    @Property(str, notify=selectedVideoChanged)
     def selectedFileName(self):
-        job = job_store.get_job(self._selected_job_id) if self._selected_job_id else None
-        return job.original_filename if job else ""
+        video = video_store.get_video(self._selected_video_id) if self._selected_video_id else None
+        return video.original_filename if video else ""
 
-    @Property(str, notify=selectedJobChanged)
+    @Property(str, notify=selectedVideoChanged)
     def selectedStatus(self):
-        job = job_store.get_job(self._selected_job_id) if self._selected_job_id else None
-        return job.status if job else "none"
+        video = video_store.get_video(self._selected_video_id) if self._selected_video_id else None
+        return video.status if video else "none"
 
-    @Property(str, notify=selectedJobChanged)
+    @Property(str, notify=selectedVideoChanged)
     def selectedStep(self):
-        job = job_store.get_job(self._selected_job_id) if self._selected_job_id else None
-        return job.step_detail or job.step if job else "pending"
+        video = video_store.get_video(self._selected_video_id) if self._selected_video_id else None
+        return video.step_detail or video.step if video else "pending"
 
-    @Property(int, notify=selectedJobChanged)
+    @Property(int, notify=selectedVideoChanged)
     def selectedProgress(self):
-        job = job_store.get_job(self._selected_job_id) if self._selected_job_id else None
-        return job.progress if job else 0
+        video = video_store.get_video(self._selected_video_id) if self._selected_video_id else None
+        return video.progress if video else 0
 
-    @Property(str, notify=selectedJobChanged)
+    @Property(str, notify=selectedVideoChanged)
     def selectedStageLabel(self):
-        job = job_store.get_job(self._selected_job_id) if self._selected_job_id else None
-        if not job:
+        video = video_store.get_video(self._selected_video_id) if self._selected_video_id else None
+        if not video:
             return "Ready"
         labels = {
             "starting": "Preparing project",
@@ -766,83 +858,83 @@ class HaizFlowController(QObject):
             "paused": "Paused",
             "done": "Export complete",
         }
-        return labels.get(job.step, job.step_detail or job.status)
+        return labels.get(video.step, video.step_detail or video.status)
 
-    @Property(str, notify=selectedJobChanged)
+    @Property(str, notify=selectedVideoChanged)
     def selectedProgressDetail(self):
-        job = job_store.get_job(self._selected_job_id) if self._selected_job_id else None
-        if not job:
+        video = video_store.get_video(self._selected_video_id) if self._selected_video_id else None
+        if not video:
             return ""
-        item_detail = f"{job.current_item}/{job.total_items}" if job.total_items else ""
-        return " | ".join(part for part in (job.step_detail, item_detail) if part)
+        item_detail = f"{video.current_item}/{video.total_items}" if video.total_items else ""
+        return " | ".join(part for part in (video.step_detail, item_detail) if part)
 
-    @Property(str, notify=selectedJobChanged)
+    @Property(str, notify=selectedVideoChanged)
     def selectedElapsed(self):
-        job = job_store.get_job(self._selected_job_id) if self._selected_job_id else None
-        if not job or not job.started_at:
+        video = video_store.get_video(self._selected_video_id) if self._selected_video_id else None
+        if not video or not video.started_at:
             return ""
         try:
-            started_at = datetime.fromisoformat(job.started_at.replace("Z", "+00:00"))
-            if job.status == "processing":
+            started_at = datetime.fromisoformat(video.started_at.replace("Z", "+00:00"))
+            if video.status == "processing":
                 seconds = (datetime.now(timezone.utc) - started_at).total_seconds()
             else:
-                finished_at = datetime.fromisoformat(job.updated_at.replace("Z", "+00:00"))
+                finished_at = datetime.fromisoformat(video.updated_at.replace("Z", "+00:00"))
                 seconds = (finished_at - started_at).total_seconds()
             return self._format_duration(max(0, seconds))
         except ValueError:
             return ""
 
-    @Property(str, notify=selectedJobChanged)
+    @Property(str, notify=selectedVideoChanged)
     def selectedUpdatedAt(self):
-        job = job_store.get_job(self._selected_job_id) if self._selected_job_id else None
-        return job.updated_at if job else ""
+        video = video_store.get_video(self._selected_video_id) if self._selected_video_id else None
+        return video.updated_at if video else ""
 
-    @Property(str, notify=selectedJobChanged)
+    @Property(str, notify=selectedVideoChanged)
     def selectedOutputFormat(self):
-        job = job_store.get_job(self._selected_job_id) if self._selected_job_id else None
-        return job.output_format if job else ""
+        video = video_store.get_video(self._selected_video_id) if self._selected_video_id else None
+        return video.output_format if video else ""
 
-    @Property(str, notify=selectedJobChanged)
+    @Property(str, notify=selectedVideoChanged)
     def selectedTargetLanguageLabel(self):
-        job = job_store.get_job(self._selected_job_id) if self._selected_job_id else None
-        return self._language_label(job.target_language) if job else ""
+        video = video_store.get_video(self._selected_video_id) if self._selected_video_id else None
+        return self._language_label(video.target_language) if video else ""
 
-    @Property(str, notify=selectedJobChanged)
+    @Property(str, notify=selectedVideoChanged)
     def selectedTranslatorProvider(self):
-        job = job_store.get_job(self._selected_job_id) if self._selected_job_id else None
-        return job.translator_provider if job else ""
+        video = video_store.get_video(self._selected_video_id) if self._selected_video_id else None
+        return video.translator_provider if video else ""
 
-    @Property(str, notify=selectedJobChanged)
+    @Property(str, notify=selectedVideoChanged)
     def selectedInputPath(self):
-        job = job_store.get_job(self._selected_job_id) if self._selected_job_id else None
-        return self._resolve_job_file(job, ("video_input", "input_video"), ("input", "video.mp4"))
+        video = video_store.get_video(self._selected_video_id) if self._selected_video_id else None
+        return self._resolve_video_file(video, ("video_input", "input_video"), ("input", "video.mp4"))
 
-    @Property(str, notify=selectedJobChanged)
+    @Property(str, notify=selectedVideoChanged)
     def selectedOutputPath(self):
-        job = job_store.get_job(self._selected_job_id) if self._selected_job_id else None
-        return self._resolve_job_file(job, ("final_video", "output_video"), ("output", "final.mp4"))
+        video = video_store.get_video(self._selected_video_id) if self._selected_video_id else None
+        return self._resolve_video_file(video, ("final_video", "output_video"), ("output", "final.mp4"))
 
-    @Property(bool, notify=selectedJobChanged)
+    @Property(bool, notify=selectedVideoChanged)
     def hasSelectedOutput(self):
-        job = job_store.get_job(self._selected_job_id) if self._selected_job_id else None
-        if not job or job.status != "done":
+        video = video_store.get_video(self._selected_video_id) if self._selected_video_id else None
+        if not video or video.status != "done":
             return False
-        output_path = self._resolve_job_file(job, ("final_video", "output_video"), ("output", "final.mp4"))
+        output_path = self._resolve_video_file(video, ("final_video", "output_video"), ("output", "final.mp4"))
         return bool(output_path and os.path.isfile(output_path) and os.path.getsize(output_path) > 0)
 
-    @Property(str, notify=selectedJobChanged)
+    @Property(str, notify=selectedVideoChanged)
     def selectedSrtPath(self):
-        job = job_store.get_job(self._selected_job_id) if self._selected_job_id else None
-        return self._resolve_job_file(job, ("srt_output", "subtitle_output"), ("temp", "vi.srt"))
+        video = video_store.get_video(self._selected_video_id) if self._selected_video_id else None
+        return self._resolve_video_file(video, ("srt_output", "subtitle_output"), ("temp", "vi.srt"))
 
-    @Property(str, notify=selectedJobChanged)
+    @Property(str, notify=selectedVideoChanged)
     def selectedVoicePath(self):
-        job = job_store.get_job(self._selected_job_id) if self._selected_job_id else None
-        return self._resolve_job_file(job, ("voice_output", "dubbed_audio"), ("temp", "voice_final.wav"))
+        video = video_store.get_video(self._selected_video_id) if self._selected_video_id else None
+        return self._resolve_video_file(video, ("voice_output", "dubbed_audio"), ("temp", "voice_final.wav"))
 
-    @Property(str, notify=selectedJobChanged)
+    @Property(str, notify=selectedVideoChanged)
     def selectedLogsPath(self):
-        return job_store.get_job_logs_path(self._selected_job_id) if self._selected_job_id else ""
+        return video_store.get_video_logs_path(self._selected_video_id) if self._selected_video_id else ""
 
     @Property(str, notify=logsChanged)
     def logs(self):
@@ -1005,7 +1097,7 @@ class HaizFlowController(QObject):
         if not self.hasOpenProject:
             self._url_importer.complete_import(False, "Open or create a project before downloading a video.")
             return
-        if self._project_type == "single" and self.isSelectedJobProcessing:
+        if self._project_type == "single" and self.isSelectedVideoProcessing:
             self._url_importer.complete_import(
                 False,
                 "Pause or finish the current video before replacing it.",
@@ -1017,7 +1109,7 @@ class HaizFlowController(QObject):
             "project_name": self._project_name,
             "project_directory": self._project_directory,
             "project_type": self._project_type,
-            "selected_job_id": self._selected_job_id,
+            "selected_video_id": self._selected_video_id,
             "config": self._build_config(),
             "media_source": {
                 "type": "video_url",
@@ -1044,16 +1136,16 @@ class HaizFlowController(QObject):
                 previous_count = self.batchCount
                 self.importBatchVideos([path])
                 return self.batchCount > previous_count
-            if self._selected_job_id:
-                return self.replaceSelectedJobVideo(path)
+            if self._selected_video_id:
+                return self.replaceSelectedVideoVideo(path)
             return self.importVideo(path)
 
-        target_job_id = target.get("selected_job_id")
-        if mode != "batch" and target_job_id:
-            return self._replace_job_video(target_job_id, path, target.get("media_source"))
+        target_video_id = target.get("selected_video_id")
+        if mode != "batch" and target_video_id:
+            return self._replace_video_video(target_video_id, path, target.get("media_source"))
 
         config = target.get("config")
-        if not isinstance(config, JobConfig):
+        if not isinstance(config, VideoConfig):
             return False
         registered_keys = {project.get("key") for project in project_store.list_projects()}
         if target.get("project_key") not in registered_keys:
@@ -1066,42 +1158,42 @@ class HaizFlowController(QObject):
             }
             if target.get("media_source"):
                 import_kwargs["media_source"] = target["media_source"]
-            job = create_desktop_job(
+            video = create_desktop_video(
                 path,
                 config,
                 **import_kwargs,
                 project_key_value=str(target.get("project_key") or ""),
             )
             thumbnail_path = self._create_video_thumbnail_path(
-                job.files["video_input"],
-                self._job_thumbnail_path(job.job_id),
+                video.files["video_input"],
+                self._video_thumbnail_path(video.video_id),
             )
             if thumbnail_path:
-                job.files["thumbnail"] = thumbnail_path
-                job_store.save_job(job)
+                video.files["thumbnail"] = thumbnail_path
+                video_store.save_video(video)
         except Exception as exc:
             QMessageBox.warning(None, "Import video", str(exc))
             return False
 
         target_is_open = target.get("project_key") == self._selected_project_key
         if target_is_open and mode == "batch":
-            self._batch_job_ids.append(job.job_id)
+            self._batch_video_ids.append(video.video_id)
             self._refresh_batch_model()
             self.batchChanged.emit()
         elif target_is_open:
-            self._select_job(job)
-        self.refreshJobs()
+            self._select_video(video)
+        self.refreshVideos()
         return True
 
     def _current_project_media_keys(self) -> set[str]:
         keys = set()
-        for job in job_store.list_jobs():
-            if not job.project_directory:
+        for video in video_store.list_videos():
+            if not video.project_directory:
                 continue
-            key = self._job_project_key(job)
+            key = self._video_project_key(video)
             if key != self._selected_project_key:
                 continue
-            source = getattr(job, "media_source", None)
+            source = getattr(video, "media_source", None)
             platform = str(getattr(source, "platform", "") or "").strip().lower()
             remote_video_id = str(getattr(source, "remote_video_id", "") or "").strip().lower()
             source_url = str(getattr(source, "source_url", "") or "").strip().lower()
@@ -1202,7 +1294,7 @@ class HaizFlowController(QObject):
             "imported_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
         }
         try:
-            job = create_desktop_job(
+            video = create_desktop_video(
                 path,
                 target["config"].model_copy(deep=True),
                 project_name=str(target.get("project_name") or ""),
@@ -1212,22 +1304,22 @@ class HaizFlowController(QObject):
                 project_key_value=project_key,
             )
             thumbnail_path = self._create_video_thumbnail_path(
-                job.files["video_input"],
-                self._job_thumbnail_path(job.job_id),
+                video.files["video_input"],
+                self._video_thumbnail_path(video.video_id),
             )
             if thumbnail_path:
-                job.files["thumbnail"] = thumbnail_path
-                job_store.save_job(job)
+                video.files["thumbnail"] = thumbnail_path
+                video_store.save_video(video)
         except Exception as exc:
             self._channel_importer.complete_video(session_id, remote_video_id, False, str(exc))
             return
 
         if project_key == self._selected_project_key and self._project_type == "batch":
-            if job.job_id not in self._batch_job_ids:
-                self._batch_job_ids.append(job.job_id)
+            if video.video_id not in self._batch_video_ids:
+                self._batch_video_ids.append(video.video_id)
             self._refresh_batch_model()
             self.batchChanged.emit()
-        self.refreshJobs()
+        self.refreshVideos()
         self._channel_importer.complete_video(session_id, remote_video_id, True)
 
     @Slot(str)
@@ -1238,56 +1330,56 @@ class HaizFlowController(QObject):
     def browseVideo(self):
         path, _ = QFileDialog.getOpenFileName(None, "Choose input video", "", "Video files (*.mp4 *.mov *.mkv);;All files (*.*)")
         if path:
-            if self._selected_job_id:
-                self.replaceSelectedJobVideo(path)
+            if self._selected_video_id:
+                self.replaceSelectedVideoVideo(path)
             else:
                 self.importVideo(path)
 
     @Slot(str, result=bool)
-    def replaceSelectedJobVideo(self, path):
-        return self._replace_job_video(self._selected_job_id, path)
+    def replaceSelectedVideoVideo(self, path):
+        return self._replace_video_video(self._selected_video_id, path)
 
-    def _replace_job_video(self, job_id, path, media_source=None):
-        job = job_store.get_job(job_id) if job_id else None
+    def _replace_video_video(self, video_id, path, media_source=None):
+        video = video_store.get_video(video_id) if video_id else None
         normalized_path = self._normalize_video_path(path)
-        if not job:
+        if not video:
             return False
-        if job.status == "processing" or self._processing_queue.active_job_id == job.job_id:
+        if video.status == "processing" or self._processing_queue.active_video_id == video.video_id:
             QMessageBox.information(None, "Replace video", "Pause or finish this video before replacing it.")
             return False
         if not os.path.isfile(normalized_path) or os.path.splitext(normalized_path)[1].lower() not in {".mp4", ".mov", ".mkv"}:
             QMessageBox.warning(None, "Invalid video", "Choose an MP4, MOV, or MKV video file.")
             return False
-        if self._processing_queue.discard(job.job_id):
+        if self._processing_queue.discard(video.video_id):
             self._update_queue_positions()
         try:
-            job = job_store.replace_job_input(job.job_id, normalized_path, media_source=media_source)
+            video = video_store.replace_video_input(video.video_id, normalized_path, media_source=media_source)
         except (OSError, RuntimeError) as exc:
             QMessageBox.warning(None, "Replace video", str(exc))
             return False
-        if not job:
+        if not video:
             return False
-        destination = job.files["video_input"]
+        destination = video.files["video_input"]
         try:
-            job.video_width, job.video_height = get_video_dimensions(destination)
+            video.video_width, video.video_height = get_video_dimensions(destination)
         except RuntimeError:
-            job.video_width, job.video_height = 0, 0
-        thumbnail_path = self._create_video_thumbnail_path(destination, self._job_thumbnail_path(job.job_id))
+            video.video_width, video.video_height = 0, 0
+        thumbnail_path = self._create_video_thumbnail_path(destination, self._video_thumbnail_path(video.video_id))
         if thumbnail_path:
-            job.files["thumbnail"] = thumbnail_path
-        job_store.save_job(job)
+            video.files["thumbnail"] = thumbnail_path
+        video_store.save_video(video)
         # The managed input path remains stable (input/video.ext) after a
         # replacement, so explicitly refresh the image source as well.
-        update_open_view = self._selected_job_id == job.job_id
+        update_open_view = self._selected_video_id == video.video_id
         if update_open_view:
             self._set_video_path(destination, refresh_thumbnail=True)
-        job_store.log_to_job(job.job_id, f"Input video replaced with: {job.original_filename}")
+        video_store.log_to_video(video.video_id, f"Input video replaced with: {video.original_filename}")
         if update_open_view:
-            self._logs = self._read_job_logs(job.job_id)
+            self._logs = self._read_video_logs(video.video_id)
             self.videoThumbnailChanged.emit()
-            self.selectedJobChanged.emit()
+            self.selectedVideoChanged.emit()
             self.logsChanged.emit()
-        self.refreshJobs()
+        self.refreshVideos()
         self._log_queue.put("__QUEUE_CHANGED__")
         return True
 
@@ -1323,15 +1415,15 @@ class HaizFlowController(QObject):
             return False
         self._selected_project_key = project["key"]
         self.videoPath = ""
-        self._selected_job_id = None
-        self._batch_job_ids = []
+        self._selected_video_id = None
+        self._batch_video_ids = []
         self._refresh_batch_model()
         self._logs = ""
-        self.tasks.set_job(None)
+        self.tasks.set_video(None)
         self.projectSetupChanged.emit()
-        self.selectedJobChanged.emit()
+        self.selectedVideoChanged.emit()
         self.logsChanged.emit()
-        self.refreshJobs()
+        self.refreshVideos()
         self.projectPrepared.emit()
         return True
 
@@ -1414,7 +1506,7 @@ class HaizFlowController(QObject):
             return False
         if self.hasOpenProject:
             try:
-                job = create_desktop_job(
+                video = create_desktop_video(
                     normalized_path,
                     self._build_config(),
                     project_name=self._project_name,
@@ -1424,15 +1516,15 @@ class HaizFlowController(QObject):
             except Exception as exc:
                 QMessageBox.critical(None, "Cannot import video", str(exc))
                 return False
-            self._assign_project_thumbnail(job)
-            self._select_job(job)
-            self.refreshJobs()
+            self._assign_project_thumbnail(video)
+            self._select_video(video)
+            self.refreshVideos()
             return True
 
-        self._selected_job_id = None
-        self.tasks.set_job(None)
+        self._selected_video_id = None
+        self.tasks.set_video(None)
         self.videoPath = normalized_path
-        self.selectedJobChanged.emit()
+        self.selectedVideoChanged.emit()
         return True
 
     @Slot()
@@ -1476,7 +1568,7 @@ class HaizFlowController(QObject):
         errors = []
         for path in valid_paths:
             try:
-                job = create_desktop_job(
+                video = create_desktop_video(
                     path,
                     self._build_config(),
                     project_name=self._project_name,
@@ -1484,19 +1576,19 @@ class HaizFlowController(QObject):
                     project_key_value=self._selected_project_key,
                 )
                 thumbnail_path = self._create_video_thumbnail_path(
-                    job.files["video_input"],
-                    self._job_thumbnail_path(job.job_id),
+                    video.files["video_input"],
+                    self._video_thumbnail_path(video.video_id),
                 )
                 if thumbnail_path:
-                    job.files["thumbnail"] = thumbnail_path
-                    job_store.save_job(job)
-                created_ids.append(job.job_id)
+                    video.files["thumbnail"] = thumbnail_path
+                    video_store.save_video(video)
+                created_ids.append(video.video_id)
             except Exception as exc:
                 errors.append(f"{os.path.basename(path)}: {exc}")
 
-        self._batch_job_ids.extend(created_ids)
+        self._batch_video_ids.extend(created_ids)
         self._refresh_batch_model()
-        self.refreshJobs()
+        self.refreshVideos()
         self.batchChanged.emit()
 
         rejected = invalid_names + errors
@@ -1523,17 +1615,17 @@ class HaizFlowController(QObject):
     @Slot()
     def startBatch(self):
         pending_ids = []
-        for job_id in self._batch_job_ids:
-            job = job_store.get_job(job_id)
-            if job and job.status == "pending":
-                pending_ids.append(job_id)
+        for video_id in self._batch_video_ids:
+            video = video_store.get_video(video_id)
+            if video and video.status == "pending":
+                pending_ids.append(video_id)
         if not pending_ids:
             QMessageBox.information(None, "Batch queue", "Add at least one video to the queue.")
             return
 
         self._batch_running = True
         self._batch_stop_requested = False
-        added = self._enqueue_jobs(pending_ids)
+        added = self._enqueue_videos(pending_ids)
         if not added:
             self._batch_running = False
             QMessageBox.information(None, "Batch queue", "These videos are already waiting or processing.")
@@ -1543,12 +1635,12 @@ class HaizFlowController(QObject):
     @Slot(result=bool)
     def applyBatchSettings(self):
         updated = 0
-        for job_id in self._batch_job_ids:
-            job = job_store.get_job(job_id)
-            if not job or self._processing_queue.contains(job_id):
+        for video_id in self._batch_video_ids:
+            video = video_store.get_video(video_id)
+            if not video or self._processing_queue.contains(video_id):
                 continue
-            job_store.update_job(
-                job_id,
+            video_store.update_video(
+                video_id,
                 mode=self._workflow_mode,
                 source_language="auto",
                 target_language=self._target_language,
@@ -1560,25 +1652,25 @@ class HaizFlowController(QObject):
         if not updated:
             QMessageBox.information(None, "Batch settings", "Add at least one video before applying settings.")
             return False
-        self.refreshJobs()
+        self.refreshVideos()
         self.batchChanged.emit()
         return True
 
     @Slot()
     def loadBatchSettings(self):
-        jobs = [job_store.get_job(job_id) for job_id in self._batch_job_ids]
-        jobs = [job for job in jobs if job]
-        if not jobs:
+        videos = [video_store.get_video(video_id) for video_id in self._batch_video_ids]
+        videos = [video for video in videos if video]
+        if not videos:
             return
         common, _count = Counter(
             (
-                job.mode,
-                job.target_language,
-                job.tts_voice,
-                job.enable_audio_separation,
-                job.original_video_volume,
+                video.mode,
+                video.target_language,
+                video.tts_voice,
+                video.enable_audio_separation,
+                video.original_video_volume,
             )
-            for job in jobs
+            for video in videos
         ).most_common(1)[0]
         workflow_mode, target_language, tts_voice, audio_separation, original_volume = common
         self._workflow_mode = workflow_mode
@@ -1594,14 +1686,14 @@ class HaizFlowController(QObject):
         self.originalVolumeChanged.emit()
 
     @Slot(result=bool)
-    def saveSelectedJobSettings(self):
-        job = job_store.get_job(self._selected_job_id) if self._selected_job_id else None
-        if not job or job.project_type != "batch" or self._processing_queue.contains(job.job_id):
+    def saveSelectedVideoSettings(self):
+        video = video_store.get_video(self._selected_video_id) if self._selected_video_id else None
+        if not video or video.project_type != "batch" or self._processing_queue.contains(video.video_id):
             return False
-        self._apply_setup_to_job(job)
-        job_store.log_to_job(job.job_id, "Per-video dubbing settings saved.")
-        self.refreshJobs()
-        self.selectedJobChanged.emit()
+        self._apply_setup_to_video(video)
+        video_store.log_to_video(video.video_id, "Per-video dubbing settings saved.")
+        self.refreshVideos()
+        self.selectedVideoChanged.emit()
         self.batchChanged.emit()
         return True
 
@@ -1613,16 +1705,16 @@ class HaizFlowController(QObject):
             return
 
         self._batch_stop_requested = True
-        active_job_id = self._processing_queue.active_job_id
-        if active_job_id in self._batch_job_ids:
-            cancel_job(active_job_id)
-            job_store.update_job(active_job_id, status="cancelled", error=None, step="cancelled")
-            job_store.log_to_job(active_job_id, "Batch stop requested. Active subprocesses were force-stopped.")
-        for job_id in self._batch_job_ids:
-            job = job_store.get_job(job_id)
-            if job and self._processing_queue.discard(job_id):
-                job_store.update_job(job_id, status="cancelled", error=None, step="cancelled")
-                job_store.log_to_job(job_id, "Cancelled while waiting in the processing queue.")
+        active_video_id = self._processing_queue.active_video_id
+        if active_video_id in self._batch_video_ids:
+            cancel_video(active_video_id)
+            video_store.update_video(active_video_id, status="cancelled", error=None, step="cancelled")
+            video_store.log_to_video(active_video_id, "Batch stop requested. Active subprocesses were force-stopped.")
+        for video_id in self._batch_video_ids:
+            video = video_store.get_video(video_id)
+            if video and self._processing_queue.discard(video_id):
+                video_store.update_video(video_id, status="cancelled", error=None, step="cancelled")
+                video_store.log_to_video(video_id, "Cancelled while waiting in the processing queue.")
         self._refresh_batch_model()
         self.batchChanged.emit()
 
@@ -1630,27 +1722,27 @@ class HaizFlowController(QObject):
     def clearBatch(self):
         if self.isBatchRunning:
             return
-        self._batch_job_ids = []
+        self._batch_video_ids = []
         self._refresh_batch_model()
         self.batchChanged.emit()
 
     @staticmethod
-    def _batch_output_directory(job):
+    def _batch_output_directory(video):
         """Return only the app-owned per-video output directory, if it is safe to remove."""
-        project_directory = (job.project_directory or "").strip()
-        output_path = (job.files or {}).get("final_video", "")
+        project_directory = (video.project_directory or "").strip()
+        output_path = (video.files or {}).get("final_video", "")
         if not project_directory or not output_path:
             return ""
         project_root = (
-            project_store.project_root_for_key(job.project_key)
-            if getattr(job, "project_key", "")
-            else project_store.project_root(job.project_name, project_directory, job.project_type)
+            project_store.project_root_for_key(video.project_key)
+            if getattr(video, "project_key", "")
+            else project_store.project_root(video.project_name, project_directory, video.project_type)
         )
         export_roots = (
             os.path.abspath(
-                project_store.project_exports_dir_for_key(job.project_key)
-                if getattr(job, "project_key", "")
-                else project_store.project_exports_dir(job.project_name, project_directory, job.project_type)
+                project_store.project_exports_dir_for_key(video.project_key)
+                if getattr(video, "project_key", "")
+                else project_store.project_exports_dir(video.project_name, project_directory, video.project_type)
             ),
             os.path.abspath(os.path.join(project_root, "outputs")),
         )
@@ -1663,8 +1755,8 @@ class HaizFlowController(QObject):
         return output_directory
 
     @staticmethod
-    def _remove_empty_batch_output_parents(job):
-        output_directory = HaizFlowController._batch_output_directory(job)
+    def _remove_empty_batch_output_parents(video):
+        output_directory = HaizFlowController._batch_output_directory(video)
         if not output_directory:
             return
         outputs_root = os.path.dirname(output_directory)
@@ -1678,7 +1770,7 @@ class HaizFlowController(QObject):
 
     @Slot()
     def deleteCurrentBatch(self):
-        batch_ids = list(self._batch_job_ids)
+        batch_ids = list(self._batch_video_ids)
         if not self.hasOpenProject:
             return
         if not batch_ids:
@@ -1719,39 +1811,39 @@ class HaizFlowController(QObject):
                 self._channel_import_targets.pop(session_id, None)
 
         self._batch_stop_requested = True
-        active_job_id = self._processing_queue.active_job_id
-        if active_job_id in batch_ids:
-            cancel_job(active_job_id)
+        active_video_id = self._processing_queue.active_video_id
+        if active_video_id in batch_ids:
+            cancel_video(active_video_id)
 
         failures = []
         remaining_ids = []
-        for job_id in batch_ids:
-            job = job_store.get_job(job_id)
-            if not job:
+        for video_id in batch_ids:
+            video = video_store.get_video(video_id)
+            if not video:
                 continue
-            self._deleted_job_ids.add(job_id)
-            self._processing_queue.discard(job_id)
-            if job.status == "processing":
-                cancel_job(job_id)
-            output_directory = self._batch_output_directory(job)
+            self._deleted_video_ids.add(video_id)
+            self._processing_queue.discard(video_id)
+            if video.status == "processing":
+                cancel_video(video_id)
+            output_directory = self._batch_output_directory(video)
             try:
                 if output_directory and os.path.isdir(output_directory):
                     shutil.rmtree(output_directory)
-                job_store.delete_job(job_id)
-                self._remove_empty_batch_output_parents(job)
+                video_store.delete_video(video_id)
+                self._remove_empty_batch_output_parents(video)
             except Exception as exc:
-                failures.append(f"{job.original_filename}: {exc}")
-                remaining_ids.append(job_id)
+                failures.append(f"{video.original_filename}: {exc}")
+                remaining_ids.append(video_id)
 
-        self._batch_job_ids = remaining_ids
+        self._batch_video_ids = remaining_ids
         self._refresh_batch_model()
         self.batchChanged.emit()
-        self._selected_job_id = None
+        self._selected_video_id = None
         self._logs = ""
-        self.tasks.set_job(None)
-        self.selectedJobChanged.emit()
+        self.tasks.set_video(None)
+        self.selectedVideoChanged.emit()
         self.logsChanged.emit()
-        self.refreshJobs()
+        self.refreshVideos()
 
         if failures:
             QMessageBox.warning(
@@ -1772,28 +1864,28 @@ class HaizFlowController(QObject):
         self.batchDeleted.emit()
 
     @Slot()
-    def startJob(self):
+    def startVideo(self):
         if not self._video_path.strip():
             QMessageBox.critical(None, "Missing video", "Please choose an input video.")
             return
         try:
-            job = create_desktop_job(self._video_path, self._build_config())
+            video = create_desktop_video(self._video_path, self._build_config())
         except Exception as exc:
             QMessageBox.critical(None, "Cannot start project", str(exc))
             return
 
-        self._assign_project_thumbnail(job)
+        self._assign_project_thumbnail(video)
 
-        self._selected_job_id = job.job_id
-        self._logs = self._read_job_logs(job.job_id)
-        self.tasks.set_job(job)
-        self.selectedJobChanged.emit()
+        self._selected_video_id = video.video_id
+        self._logs = self._read_video_logs(video.video_id)
+        self.tasks.set_video(video)
+        self.selectedVideoChanged.emit()
         self.logsChanged.emit()
-        self.refreshJobs()
-        self._enqueue_job(job.job_id)
+        self.refreshVideos()
+        self._enqueue_video(video.video_id)
 
     @Slot(result=bool)
-    def startProjectJob(self):
+    def startProjectVideo(self):
         if not self._video_path.strip():
             QMessageBox.critical(None, "Missing video", "Please choose an input video.")
             return False
@@ -1803,22 +1895,22 @@ class HaizFlowController(QObject):
         if not self._project_directory.strip():
             QMessageBox.warning(None, "Project storage location", "Choose a location for this project.")
             return False
-        selected_job = job_store.get_job(self._selected_job_id) if self._selected_job_id else None
-        if selected_job and self._processing_queue.contains(selected_job.job_id):
+        selected_video = video_store.get_video(self._selected_video_id) if self._selected_video_id else None
+        if selected_video and self._processing_queue.contains(selected_video.video_id):
             self._status_message = "This video is already waiting or processing."
             self.statusMessageChanged.emit()
             return False
-        if selected_job and selected_job.status == "pending" and not self._processing_queue.contains(selected_job.job_id):
-            self._apply_setup_to_job(selected_job, review_approved=False)
-            job_store.log_to_job(selected_job.job_id, "Processing requested for the imported video.")
-            self._enqueue_job(selected_job.job_id)
-            self.selectedJobChanged.emit()
-            self.refreshJobs()
+        if selected_video and selected_video.status == "pending" and not self._processing_queue.contains(selected_video.video_id):
+            self._apply_setup_to_video(selected_video, review_approved=False)
+            video_store.log_to_video(selected_video.video_id, "Processing requested for the imported video.")
+            self._enqueue_video(selected_video.video_id)
+            self.selectedVideoChanged.emit()
+            self.refreshVideos()
             return True
-        if selected_job:
+        if selected_video:
             return False
         try:
-            job = create_desktop_job(
+            video = create_desktop_video(
                 self._video_path,
                 self._build_config(),
                 project_name=self._project_name,
@@ -1829,123 +1921,123 @@ class HaizFlowController(QObject):
             QMessageBox.critical(None, "Cannot create project", str(exc))
             return False
 
-        self._assign_project_thumbnail(job)
+        self._assign_project_thumbnail(video)
 
-        self._selected_job_id = job.job_id
-        self._logs = self._read_job_logs(job.job_id)
-        self.tasks.set_job(job)
-        self.selectedJobChanged.emit()
+        self._selected_video_id = video.video_id
+        self._logs = self._read_video_logs(video.video_id)
+        self.tasks.set_video(video)
+        self.selectedVideoChanged.emit()
         self.logsChanged.emit()
-        self.refreshJobs()
-        self._enqueue_job(job.job_id)
+        self.refreshVideos()
+        self._enqueue_video(video.video_id)
         return True
 
     @Slot()
-    def stopJob(self):
-        selected_job_id = self._selected_job_id
-        if not selected_job_id or selected_job_id != self._processing_queue.active_job_id:
+    def stopVideo(self):
+        selected_video_id = self._selected_video_id
+        if not selected_video_id or selected_video_id != self._processing_queue.active_video_id:
             return
-        selected_job = job_store.get_job(selected_job_id)
-        if not selected_job:
+        selected_video = video_store.get_video(selected_video_id)
+        if not selected_video:
             return
-        if self.isSelectedBatchJob:
+        if self.isSelectedBatchVideo:
             self.stopBatch()
             return
-        if QMessageBox.question(None, "Pause job", "Pause this job? You can resume it later from Projects.") != QMessageBox.StandardButton.Yes:
+        if QMessageBox.question(None, "Pause video", "Pause this video? You can resume it later from Projects.") != QMessageBox.StandardButton.Yes:
             return
-        resume_step = selected_job.step
-        pause_job(selected_job_id)
-        job_store.update_job(selected_job_id, status="paused", error=None, step="paused", resume_step=resume_step, step_detail=f"Paused during {resume_step or 'startup'}")
-        job_store.log_to_job(selected_job_id, "Pause requested. Active subprocesses were stopped.")
-        self.selectedJobChanged.emit()
-        self.refreshJobs()
+        resume_step = selected_video.step
+        pause_video(selected_video_id)
+        video_store.update_video(selected_video_id, status="paused", error=None, step="paused", resume_step=resume_step, step_detail=f"Paused during {resume_step or 'startup'}")
+        video_store.log_to_video(selected_video_id, "Pause requested. Active subprocesses were stopped.")
+        self.selectedVideoChanged.emit()
+        self.refreshVideos()
 
     @Slot()
-    def resumeSelectedJob(self):
-        job = job_store.get_job(self._selected_job_id) if self._selected_job_id else None
-        if not job or job.status != "paused":
+    def resumeSelectedVideo(self):
+        video = video_store.get_video(self._selected_video_id) if self._selected_video_id else None
+        if not video or video.status != "paused":
             return
-        job_store.update_job(job.job_id, status="pending", step="queued", step_detail="Queued to resume")
-        self._enqueue_job(job.job_id)
-        self.selectedJobChanged.emit()
+        video_store.update_video(video.video_id, status="pending", step="queued", step_detail="Queued to resume")
+        self._enqueue_video(video.video_id)
+        self.selectedVideoChanged.emit()
 
     @Slot()
-    def restartSelectedJob(self):
-        job = job_store.get_job(self._selected_job_id) if self._selected_job_id else None
-        if not job or self._processing_queue.contains(job.job_id):
+    def restartSelectedVideo(self):
+        video = video_store.get_video(self._selected_video_id) if self._selected_video_id else None
+        if not video or self._processing_queue.contains(video.video_id):
             return
         if self._device_switching:
             QMessageBox.information(None, "Processing device", "Wait for the processing device to finish switching before restarting.")
             return
-        if QMessageBox.question(None, "Restart job", "Apply the current dubbing setup and restart this project?") != QMessageBox.StandardButton.Yes:
+        if QMessageBox.question(None, "Restart video", "Apply the current dubbing setup and restart this project?") != QMessageBox.StandardButton.Yes:
             return
-        self._apply_setup_to_job(job, review_approved=False)
-        restarted = job_store.prepare_job_restart(job.job_id)
+        self._apply_setup_to_video(video, review_approved=False)
+        restarted = video_store.prepare_video_restart(video.video_id)
         if not restarted:
             return
         profile = runtime_profile()
-        job_store.log_to_job(
-            restarted.job_id,
+        video_store.log_to_video(
+            restarted.video_id,
             f"Restart requested with the latest dubbing setup and runtime: {profile.summary}.",
         )
-        self._enqueue_job(restarted.job_id)
-        self.selectedJobChanged.emit()
+        self._enqueue_video(restarted.video_id)
+        self.selectedVideoChanged.emit()
 
     @Slot(str)
     def approveTranslationReview(self, payload):
-        job = job_store.get_job(self._selected_job_id) if self._selected_job_id else None
-        if not job or job.status != "awaiting_review":
+        video = video_store.get_video(self._selected_video_id) if self._selected_video_id else None
+        if not video or video.status != "awaiting_review":
             return
         try:
             segments = json.loads(payload)
             if not isinstance(segments, list) or any(not str(item.get("text", "")).strip() for item in segments):
                 raise ValueError("Every translation must contain text.")
-            with open(job.files["transcript_json"], "w", encoding="utf-8") as file:
+            with open(video.files["transcript_json"], "w", encoding="utf-8") as file:
                 json.dump(segments, file, ensure_ascii=False, indent=2)
         except (OSError, ValueError, json.JSONDecodeError) as exc:
             QMessageBox.warning(None, "Translation review", str(exc))
             return
-        job_store.update_job(job.job_id, review_approved=True, status="pending", step="queued", step_detail="Queued to create dub")
-        job_store.log_to_job(job.job_id, f"Translation review approved with {len(segments)} edited segments. Added to the processing queue.")
-        self._enqueue_job(job.job_id)
-        self.selectedJobChanged.emit()
+        video_store.update_video(video.video_id, review_approved=True, status="pending", step="queued", step_detail="Queued to create dub")
+        video_store.log_to_video(video.video_id, f"Translation review approved with {len(segments)} edited segments. Added to the processing queue.")
+        self._enqueue_video(video.video_id)
+        self.selectedVideoChanged.emit()
 
     @Slot(int)
-    def selectJob(self, row: int):
-        job = self.jobs.job_at(row)
-        if not job:
+    def selectVideo(self, row: int):
+        video = self.videos.video_at(row)
+        if not video:
             return
-        self._select_job(job)
+        self._select_video(video)
 
-    def _select_job(self, job):
-        self._selected_job_id = job.job_id
-        self._project_name = job.project_name or os.path.splitext(job.original_filename)[0]
-        self._project_directory = job.project_directory or self._project_directory
-        self._project_type = "batch" if getattr(job, "project_type", "single") == "batch" else "single"
-        self._selected_project_key = self._job_project_key(job)
+    def _select_video(self, video):
+        self._selected_video_id = video.video_id
+        self._project_name = video.project_name or os.path.splitext(video.original_filename)[0]
+        self._project_directory = video.project_directory or self._project_directory
+        self._project_type = "batch" if getattr(video, "project_type", "single") == "batch" else "single"
+        self._selected_project_key = self._video_project_key(video)
         if (
-            self._processing_queue.active_job_id != job.job_id
-            and job.status != "processing"
-            and (job.source_language != "auto" or job.output_format != "keep_ratio")
+            self._processing_queue.active_video_id != video.video_id
+            and video.status != "processing"
+            and (video.source_language != "auto" or video.output_format != "keep_ratio")
         ):
-            job = job_store.update_job(job.job_id, source_language="auto", output_format="keep_ratio") or job
-        if migrate_legacy_single_export(job):
-            job = job_store.get_job(job.job_id) or job
-        self._workflow_mode = job.mode
-        self._target_language = str(job.target_language or "vi")
-        self._tts_voice = self._normalized_voice_for_language(self._target_language, job.tts_voice)
-        if self._tts_voice != job.tts_voice and job.status != "processing":
-            job = job_store.update_job(job.job_id, tts_voice=self._tts_voice) or job
-            job_store.log_to_job(job.job_id, "Updated an incompatible saved TTS voice to match the target language.")
-        self._enable_audio_separation = job.enable_audio_separation
-        self._original_volume = job.original_video_volume
-        input_path = self._resolve_job_file(job, ("video_input", "input_video"), ("input", "video.mp4"))
-        thumbnail_path = job.files.get("thumbnail") or ""
+            video = video_store.update_video(video.video_id, source_language="auto", output_format="keep_ratio") or video
+        if migrate_legacy_single_export(video):
+            video = video_store.get_video(video.video_id) or video
+        self._workflow_mode = video.mode
+        self._target_language = str(video.target_language or "vi")
+        self._tts_voice = self._normalized_voice_for_language(self._target_language, video.tts_voice)
+        if self._tts_voice != video.tts_voice and video.status != "processing":
+            video = video_store.update_video(video.video_id, tts_voice=self._tts_voice) or video
+            video_store.log_to_video(video.video_id, "Updated an incompatible saved TTS voice to match the target language.")
+        self._enable_audio_separation = video.enable_audio_separation
+        self._original_volume = video.original_video_volume
+        input_path = self._resolve_video_file(video, ("video_input", "input_video"), ("input", "video.mp4"))
+        thumbnail_path = video.files.get("thumbnail") or ""
         self._video_path = input_path
         self._video_thumbnail_source = thumbnail_source(thumbnail_path)
-        self._load_job_preview(job)
-        self._logs = self._read_job_logs(job.job_id)
-        self.tasks.set_job(job)
+        self._load_video_preview(video)
+        self._logs = self._read_video_logs(video.video_id)
+        self.tasks.set_video(video)
         self.videoPathChanged.emit()
         self.videoThumbnailChanged.emit()
         self.targetLanguageChanged.emit()
@@ -1955,16 +2047,16 @@ class HaizFlowController(QObject):
         self.originalVolumeChanged.emit()
         self.workflowModeChanged.emit()
         self.projectSetupChanged.emit()
-        self.selectedJobChanged.emit()
+        self.selectedVideoChanged.emit()
         self.processingChanged.emit()
         self.logsChanged.emit()
 
     @Slot(int)
-    def selectBatchJob(self, row: int):
-        job = self.batch_jobs.job_at(row)
-        if not job:
+    def selectBatchVideo(self, row: int):
+        video = self.batch_videos.video_at(row)
+        if not video:
             return
-        self._select_job(job)
+        self._select_video(video)
 
     @Slot(int)
     def selectProject(self, row: int):
@@ -1982,21 +2074,21 @@ class HaizFlowController(QObject):
         self._open_project_summary(project)
 
     def _open_project_summary(self, project):
-        jobs = project["jobs"]
+        videos = project["videos"]
         self._project_name = project["project_name"]
         self._project_directory = project["project_directory"] or self._project_directory
         self._project_type = project["project_type"]
         self._selected_project_key = project["key"]
-        self._batch_job_ids = [job.job_id for job in jobs] if self._project_type == "batch" else []
+        self._batch_video_ids = [video.video_id for video in videos] if self._project_type == "batch" else []
         self._refresh_batch_model()
-        if jobs:
-            self._select_job(jobs[0])
+        if videos:
+            self._select_video(videos[0])
         else:
             self.videoPath = ""
-            self._selected_job_id = None
+            self._selected_video_id = None
             self._logs = ""
-            self.tasks.set_job(None)
-            self.selectedJobChanged.emit()
+            self.tasks.set_video(None)
+            self.selectedVideoChanged.emit()
             self.logsChanged.emit()
         self._project_type = project["project_type"]
         self.projectSetupChanged.emit()
@@ -2005,39 +2097,39 @@ class HaizFlowController(QObject):
             self.prepareChannelImport()
 
     @Slot()
-    def deleteSelectedJob(self):
-        if not self._selected_job_id:
+    def deleteSelectedVideo(self):
+        if not self._selected_video_id:
             QMessageBox.information(None, "No video selected", "Select a video in this batch first.")
             return
-        job_id = self._selected_job_id
-        job = job_store.get_job(job_id)
-        label = job.original_filename if job else job_id
+        video_id = self._selected_video_id
+        video = video_store.get_video(video_id)
+        label = video.original_filename if video else video_id
         message = f"Remove this video from the batch project and delete its generated files?\n\n{label}\n\nIf it is running, it will be stopped first."
         if QMessageBox.question(None, "Remove video", message) != QMessageBox.StandardButton.Yes:
             return
-        if job and (job.status == "processing" or self._processing_queue.active_job_id == job_id):
-            cancel_job(job_id)
-            job_store.update_job(job_id, status="cancelled", error=None, step="cancelled")
-        self._deleted_job_ids.add(job_id)
-        self._processing_queue.discard(job_id)
+        if video and (video.status == "processing" or self._processing_queue.active_video_id == video_id):
+            cancel_video(video_id)
+            video_store.update_video(video_id, status="cancelled", error=None, step="cancelled")
+        self._deleted_video_ids.add(video_id)
+        self._processing_queue.discard(video_id)
         try:
-            deleted = job_store.delete_job(job_id)
+            deleted = video_store.delete_video(video_id)
         except Exception as exc:
             QMessageBox.critical(None, "Delete failed", str(exc))
             return
         if not deleted:
             QMessageBox.information(None, "Already removed", "Video data was already removed.")
-        if job_id in self._batch_job_ids:
-            self._batch_job_ids.remove(job_id)
+        if video_id in self._batch_video_ids:
+            self._batch_video_ids.remove(video_id)
             self._refresh_batch_model()
             self.batchChanged.emit()
-        self._selected_job_id = None
+        self._selected_video_id = None
         self._logs = ""
-        self.tasks.set_job(None)
-        self.selectedJobChanged.emit()
+        self.tasks.set_video(None)
+        self.selectedVideoChanged.emit()
         self.logsChanged.emit()
-        self.refreshJobs()
-        self.jobDeleted.emit()
+        self.refreshVideos()
+        self.videoDeleted.emit()
 
     @Slot()
     def openProjectFolder(self):
@@ -2055,14 +2147,14 @@ class HaizFlowController(QObject):
             return
 
         current_key = self._selected_project_key
-        project_jobs = [
-            job
-            for job in job_store.list_jobs()
-            if job.project_directory
-            and self._job_project_key(job) == current_key
+        project_videos = [
+            video
+            for video in video_store.list_videos()
+            if video.project_directory
+            and self._video_project_key(video) == current_key
         ]
-        job_label = "" if not project_jobs else f"\n\nThis also removes {len(project_jobs)} video(s) and their generated files."
-        message = f"Delete project '{self._project_name}' and all files inside its project folder?{job_label}"
+        video_label = "" if not project_videos else f"\n\nThis also removes {len(project_videos)} video(s) and their generated files."
+        message = f"Delete project '{self._project_name}' and all files inside its project folder?{video_label}"
         if QMessageBox.question(None, "Delete project", message) != QMessageBox.StandardButton.Yes:
             return
 
@@ -2083,37 +2175,37 @@ class HaizFlowController(QObject):
                 self._channel_import_targets.pop(session_id, None)
 
         try:
-            for job in project_jobs:
-                self._processing_queue.discard(job.job_id)
-                if job.status == "processing" or self._processing_queue.active_job_id == job.job_id:
-                    cancel_job(job.job_id)
-                    job_store.update_job(job.job_id, status="cancelled", error=None, step="cancelled")
-                self._deleted_job_ids.add(job.job_id)
-                job_store.delete_job(job.job_id)
+            for video in project_videos:
+                self._processing_queue.discard(video.video_id)
+                if video.status == "processing" or self._processing_queue.active_video_id == video.video_id:
+                    cancel_video(video.video_id)
+                    video_store.update_video(video.video_id, status="cancelled", error=None, step="cancelled")
+                self._deleted_video_ids.add(video.video_id)
+                video_store.delete_video(video.video_id)
             project_store.delete_project_by_key(current_key)
         except Exception as exc:
             QMessageBox.critical(None, "Delete project", str(exc))
             return
 
-        self._selected_job_id = None
+        self._selected_video_id = None
         self._selected_project_key = ""
-        self._batch_job_ids = []
+        self._batch_video_ids = []
         self._logs = ""
-        self.tasks.set_job(None)
+        self.tasks.set_video(None)
         self.videoPath = ""
         self._refresh_batch_model()
-        self.selectedJobChanged.emit()
+        self.selectedVideoChanged.emit()
         self.projectSetupChanged.emit()
         self.logsChanged.emit()
         self.batchChanged.emit()
-        self.refreshJobs()
-        self.jobDeleted.emit()
+        self.refreshVideos()
+        self.videoDeleted.emit()
 
     @Slot()
-    def refreshJobs(self):
-        all_jobs = job_store.list_jobs()
-        self.jobs.set_jobs(all_jobs[:40])
-        summaries = self._build_project_summaries(all_jobs, project_store.list_projects())
+    def refreshVideos(self):
+        all_videos = video_store.list_videos()
+        self.videos.set_videos(all_videos[:40])
+        summaries = self._build_project_summaries(all_videos, project_store.list_projects())
         self.projects.set_projects(summaries)
         self.single_projects.set_projects(
             [project for project in summaries if project["project_type"] == "single"]
@@ -2122,40 +2214,40 @@ class HaizFlowController(QObject):
             [project for project in summaries if project["project_type"] == "batch"]
         )
         self._refresh_batch_model()
-        selected = job_store.get_job(self._selected_job_id) if self._selected_job_id else None
-        self.tasks.set_job(selected)
-        self.selectedJobChanged.emit()
-        missing_thumbnails = [job.job_id for job in all_jobs if not job.files.get("thumbnail")]
+        selected = video_store.get_video(self._selected_video_id) if self._selected_video_id else None
+        self.tasks.set_video(selected)
+        self.selectedVideoChanged.emit()
+        missing_thumbnails = [video.video_id for video in all_videos if not video.files.get("thumbnail")]
         if missing_thumbnails and not self._thumbnail_refresh_running:
             self._thumbnail_refresh_running = True
             threading.Thread(target=self._create_missing_thumbnails, args=(missing_thumbnails,), daemon=True).start()
 
-    def _create_missing_thumbnails(self, job_ids):
+    def _create_missing_thumbnails(self, video_ids):
         try:
-            for job_id in job_ids:
-                job = job_store.get_job(job_id)
-                if not job or job.files.get("thumbnail"):
+            for video_id in video_ids:
+                video = video_store.get_video(video_id)
+                if not video or video.files.get("thumbnail"):
                     continue
-                video_path = self._resolve_job_file(job, ("video_input", "input_video"), ("input", "video.mp4"))
-                thumbnail_path = self._create_video_thumbnail_path(video_path, self._job_thumbnail_path(job.job_id))
+                video_path = self._resolve_video_file(video, ("video_input", "input_video"), ("input", "video.mp4"))
+                thumbnail_path = self._create_video_thumbnail_path(video_path, self._video_thumbnail_path(video.video_id))
                 if thumbnail_path:
-                    job.files["thumbnail"] = thumbnail_path
-                    job_store.save_job(job)
+                    video.files["thumbnail"] = thumbnail_path
+                    video_store.save_video(video)
         finally:
             self._log_queue.put("__THUMBNAILS_READY__")
 
     @Slot()
     def openInputPreview(self):
-        selected_job = job_store.get_job(self._selected_job_id) if self._selected_job_id else None
-        video_path = self._resolve_job_file(selected_job, ("video_input", "input_video"), ("input", "video.mp4")) if selected_job else self._video_path.strip()
+        selected_video = video_store.get_video(self._selected_video_id) if self._selected_video_id else None
+        video_path = self._resolve_video_file(selected_video, ("video_input", "input_video"), ("input", "video.mp4")) if selected_video else self._video_path.strip()
         if not video_path or not os.path.exists(video_path):
             QMessageBox.information(None, "Input preview", "Choose an input video before opening the preview editor.")
             return
-        self._preview_edit_scope = "single_job" if selected_job else "draft"
-        self._preview_target_job_ids = [selected_job.job_id] if selected_job else []
+        self._preview_edit_scope = "single_video" if selected_video else "draft"
+        self._preview_target_video_ids = [selected_video.video_id] if selected_video else []
         self._preview_group_keys = []
         self._preview_group_index = -1
-        self._preview_original_style = self._copy_subtitle_style(selected_job.subtitle_style) if selected_job else self._current_subtitle_style()
+        self._preview_original_style = self._copy_subtitle_style(selected_video.subtitle_style) if selected_video else self._current_subtitle_style()
         self._open_preview(video_path, "Input Preview Editor", True)
 
     @Slot()
@@ -2179,8 +2271,8 @@ class HaizFlowController(QObject):
 
     @Slot()
     def openInputFile(self):
-        job = job_store.get_job(self._selected_job_id) if self._selected_job_id else None
-        input_path = self._resolve_job_file(job, ("video_input", "input_video"), ("input", "video.mp4"))
+        video = video_store.get_video(self._selected_video_id) if self._selected_video_id else None
+        input_path = self._resolve_video_file(video, ("video_input", "input_video"), ("input", "video.mp4"))
         if not input_path or not os.path.exists(input_path):
             QMessageBox.information(None, "Open input video", "Input video is not available yet.")
             return
@@ -2188,11 +2280,11 @@ class HaizFlowController(QObject):
 
     @Slot()
     def openOutputFile(self):
-        job = job_store.get_job(self._selected_job_id) if self._selected_job_id else None
-        if not job or job.status != "done":
+        video = video_store.get_video(self._selected_video_id) if self._selected_video_id else None
+        if not video or video.status != "done":
             QMessageBox.information(None, "Open output", "Final video is not available yet.")
             return
-        output_path = self._resolve_job_file(job, ("final_video", "output_video"), ("output", "final.mp4"))
+        output_path = self._resolve_video_file(video, ("final_video", "output_video"), ("output", "final.mp4"))
         if not output_path or not os.path.exists(output_path):
             QMessageBox.information(None, "Open output", "Final video is not available yet.")
             return
@@ -2200,12 +2292,12 @@ class HaizFlowController(QObject):
 
     @Slot()
     def openOutputFolder(self):
-        job = job_store.get_job(self._selected_job_id) if self._selected_job_id else None
-        if job and migrate_legacy_single_export(job):
-            job = job_store.get_job(job.job_id) or job
-        output_path = self._resolve_job_file(job, ("final_video", "output_video"), ("output", "final.mp4"))
+        video = video_store.get_video(self._selected_video_id) if self._selected_video_id else None
+        if video and migrate_legacy_single_export(video):
+            video = video_store.get_video(video.video_id) or video
+        output_path = self._resolve_video_file(video, ("final_video", "output_video"), ("output", "final.mp4"))
         folder = os.path.dirname(output_path) if output_path else ""
-        fallback_folder = os.path.join(job_store.get_job_dir(job.job_id), "output") if job else ""
+        fallback_folder = os.path.join(video_store.get_video_dir(video.video_id), "output") if video else ""
         if folder and os.path.isdir(folder):
             self._open_path(folder)
             return
@@ -2228,8 +2320,8 @@ class HaizFlowController(QObject):
     def commitPreviewEdits(self):
         style = self._current_subtitle_style(self._preview_original_style)
         if self._preview_edit_scope == "size_group":
-            for job_id in self._preview_target_job_ids:
-                job_store.update_job(job_id, subtitle_style=style, subtitle_override=False)
+            for video_id in self._preview_target_video_ids:
+                video_store.update_video(video_id, subtitle_style=style, subtitle_override=False)
             self._refresh_batch_model()
             self.batchChanged.emit()
             next_index = self._preview_group_index + 1
@@ -2237,18 +2329,18 @@ class HaizFlowController(QObject):
                 self._preview_group_index = next_index
                 self._open_batch_group_preview(self._preview_group_keys[next_index])
                 return False
-        elif self._preview_edit_scope == "single_job" and self._preview_target_job_ids:
-            job_id = self._preview_target_job_ids[0]
-            job = job_store.get_job(job_id)
-            if job:
-                job_store.update_job(
-                    job_id,
+        elif self._preview_edit_scope == "single_video" and self._preview_target_video_ids:
+            video_id = self._preview_target_video_ids[0]
+            video = video_store.get_video(video_id)
+            if video:
+                video_store.update_video(
+                    video_id,
                     subtitle_style=style,
-                    subtitle_override=job.project_type == "batch",
+                    subtitle_override=video.project_type == "batch",
                 )
-                job_store.log_to_job(job_id, "Custom subtitle frame saved for this video.")
-                self.refreshJobs()
-                self.selectedJobChanged.emit()
+                video_store.log_to_video(video_id, "Custom subtitle frame saved for this video.")
+                self.refreshVideos()
+                self.selectedVideoChanged.emit()
                 self.batchChanged.emit()
         self._clear_preview_edit_session()
         return True
@@ -2261,21 +2353,21 @@ class HaizFlowController(QObject):
         self.previewChanged.emit()
 
     @Slot()
-    def openJobFolder(self):
-        if self._selected_job_id:
-            self._open_path(job_store.get_job_dir(self._selected_job_id))
+    def openVideoFolder(self):
+        if self._selected_video_id:
+            self._open_path(video_store.get_video_dir(self._selected_video_id))
 
-    def poll_jobs(self):
-        if self._selected_job_id:
-            job = job_store.get_job(self._selected_job_id)
-            if job:
-                self.tasks.set_job(job)
-                self.selectedJobChanged.emit()
-        self.refreshJobs()
+    def poll_videos(self):
+        if self._selected_video_id:
+            video = video_store.get_video(self._selected_video_id)
+            if video:
+                self.tasks.set_video(video)
+                self.selectedVideoChanged.emit()
+        self.refreshVideos()
         self.batchChanged.emit()
 
     def _build_config(self):
-        return JobConfig(
+        return VideoConfig(
             mode=self._workflow_mode,
             source_language="auto",
             target_language=self._target_language,
@@ -2302,7 +2394,7 @@ class HaizFlowController(QObject):
             project_id=str((project_store.get_project(self._selected_project_key) or {}).get("project_id") or ""),
         )
 
-    def _apply_setup_to_job(self, job, review_approved=None):
+    def _apply_setup_to_video(self, video, review_approved=None):
         config = self._build_config()
         changes = {
             "mode": config.mode,
@@ -2318,73 +2410,75 @@ class HaizFlowController(QObject):
         }
         if review_approved is not None:
             changes["review_approved"] = review_approved
-        job_store.update_job(job.job_id, **changes)
+        video_store.update_video(video.video_id, **changes)
 
-    def _enqueue_job(self, job_id: str) -> bool:
-        job = job_store.get_job(job_id)
-        if not job or job.status == "processing" or self._processing_queue.contains(job_id):
+    def _enqueue_video(self, video_id: str) -> bool:
+        video = video_store.get_video(video_id)
+        if not video or video.status == "processing" or self._processing_queue.contains(video_id):
             return False
-        job_store.update_job(job_id, status="pending", step="queued", step_detail="Queued for processing")
-        added = self._processing_queue.enqueue(job_id)
+        video_store.update_video(video_id, status="pending", step="queued", step_detail="Queued for processing")
+        added = self._processing_queue.enqueue(video_id)
         if not added:
             return False
-        job_store.log_to_job(job_id, "Added to the processing queue.")
+        video_store.log_to_video(video_id, "Added to the processing queue.")
         self._update_queue_positions()
         self.processingChanged.emit()
-        self.selectedJobChanged.emit()
+        self.selectedVideoChanged.emit()
         self._log_queue.put("__QUEUE_CHANGED__")
         return True
 
-    def _enqueue_jobs(self, job_ids) -> int:
+    def _enqueue_videos(self, video_ids) -> int:
         added = 0
-        for job_id in job_ids:
-            if self._enqueue_job(job_id):
+        for video_id in video_ids:
+            if self._enqueue_video(video_id):
                 added += 1
         return added
 
     def _update_queue_positions(self) -> None:
-        for position, job_id in enumerate(self._processing_queue.pending_ids(), start=1):
-            job = job_store.get_job(job_id)
-            if job and job.status == "pending":
-                job_store.update_job(job_id, step="queued", step_detail=f"Queued: position {position}")
+        for position, video_id in enumerate(self._processing_queue.pending_ids(), start=1):
+            video = video_store.get_video(video_id)
+            if video and video.status == "pending":
+                video_store.update_video(video_id, step="queued", step_detail=f"Queued: position {position}")
 
-    def _on_queue_job_started(self, job_id: str) -> None:
-        if job_id in self._deleted_job_ids:
+    def _on_queue_video_started(self, video_id: str) -> None:
+        if video_id in self._deleted_video_ids:
             return
-        job = job_store.get_job(job_id)
-        if not job or job.status == "cancelled":
+        video = video_store.get_video(video_id)
+        if not video or video.status == "cancelled":
             return
-        self._activate_pending_device_for_next_job(job_id)
-        job_store.update_job(job_id, status="processing", step="starting", step_detail="Processing started")
-        job_store.log_to_job(job_id, "Processing started from the shared queue.")
+        self._activate_pending_device_for_next_video(video_id)
+        video_store.update_video(video_id, status="processing", step="starting", step_detail="Processing started")
+        video_store.log_to_video(video_id, "Processing started from the shared queue.")
         self._update_queue_positions()
-        self._log_queue.put(f"__QUEUE_STARTED__:{job_id}")
+        self._log_queue.put(f"__QUEUE_STARTED__:{video_id}")
 
-    def _on_queue_job_finished(self, job_id: str) -> None:
+    def _on_queue_video_finished(self, video_id: str) -> None:
         self._update_queue_positions()
-        self._log_queue.put(f"__QUEUE_FINISHED__:{job_id}")
+        self._log_queue.put(f"__QUEUE_FINISHED__:{video_id}")
 
     def _on_processing_queue_idle(self) -> None:
         self._log_queue.put("__QUEUE_IDLE__")
 
-    def _on_processing_queue_error(self, job_id: str, exc: Exception) -> None:
-        if not job_id or job_id in self._deleted_job_ids:
+    def _on_processing_queue_error(self, video_id: str, exc: Exception) -> None:
+        if not video_id or video_id in self._deleted_video_ids:
             return
-        job = job_store.get_job(job_id)
-        if not job:
+        video = video_store.get_video(video_id)
+        if not video:
             return
         message = f"Processing queue recovered from an internal error: {exc}"
-        job_store.log_to_job(job_id, message)
-        job_store.update_job(job_id, status="failed", error=str(exc), step="failed", step_detail=message)
+        video_store.log_to_video(video_id, message)
+        video_store.update_video(video_id, status="failed", error=str(exc), step="failed", step_detail=message)
 
-    def _execute_pipeline(self, job_id):
-        job = job_store.get_job(job_id)
-        if not job or job.status == "cancelled" or job_id in self._deleted_job_ids:
+    def _execute_pipeline(self, video_id):
+        video = video_store.get_video(video_id)
+        if not video or video.status == "cancelled" or video_id in self._deleted_video_ids:
             return
         try:
             if not self._initial_model_warmup_done.is_set():
-                job_store.log_to_job(job_id, "Waiting for startup model warm-up to finish.")
+                video_store.log_to_video(video_id, "Waiting for startup model warm-up to finish.")
                 self._initial_model_warmup_done.wait()
+            if getattr(self, "_shutdown_started", False):
+                return
             runtime_probe_error = getattr(self, "_runtime_probe_error", "")
             if runtime_probe_error:
                 raise RuntimeError(f"Model runtime validation failed: {runtime_probe_error}")
@@ -2392,37 +2486,37 @@ class HaizFlowController(QObject):
             # that model processes are stable before the pipeline uses them.
             with self._model_runtime_lock:
                 pass
-            from haizflow.pipeline.process_job import process_job_sync
+            from haizflow.pipeline.process_video import process_video_sync
 
-            process_job_sync(job_id)
+            process_video_sync(video_id)
         except Exception as exc:
-            if job_id not in self._deleted_job_ids:
+            if video_id not in self._deleted_video_ids:
                 message = f"Desktop worker failed before pipeline could start: {exc}"
-                job_store.log_to_job(job_id, message)
-                job_store.update_job(job_id, status="failed", error=str(exc), step="failed")
+                video_store.log_to_video(video_id, message)
+                video_store.update_video(video_id, status="failed", error=str(exc), step="failed")
 
     @staticmethod
-    def _prepare_batch_models(job_id):
+    def _prepare_batch_models(video_id):
         profile = runtime_profile()
-        job_store.log_to_job(job_id, f"Preparing shared models for batch profile: {profile.summary}.")
+        video_store.log_to_video(video_id, f"Preparing shared models for batch profile: {profile.summary}.")
         try:
             if profile.warm_hymt2_on_startup:
-                warm_hymt2_worker(lambda detail: job_store.log_to_job(job_id, detail))
+                warm_hymt2_worker(lambda detail: video_store.log_to_video(video_id, detail))
             if profile.warm_whisper_on_startup:
                 from haizflow.pipeline.transcribe import warm_whisperx_model
 
                 warm_whisperx_model()
-            job_store.log_to_job(
-                job_id,
+            video_store.log_to_video(
+                video_id,
                 "Shared models are ready for the batch.",
             )
         except Exception as exc:
-            # The job pipeline can retry initialization at the point of use.
-            job_store.log_to_job(job_id, f"Batch model preparation deferred: {exc}")
+            # The video pipeline can retry initialization at the point of use.
+            video_store.log_to_video(video_id, f"Batch model preparation deferred: {exc}")
 
-    def _on_job_log(self, job_id, line):
-        if job_id == self._selected_job_id:
-            self._log_queue.put(("job_log", job_id, line))
+    def _on_video_log(self, video_id, line):
+        if video_id == self._selected_video_id:
+            self._log_queue.put(("video_log", video_id, line))
 
     def _drain_log_queue(self):
         changed = False
@@ -2431,20 +2525,20 @@ class HaizFlowController(QObject):
                 item = self._log_queue.get_nowait()
             except queue.Empty:
                 break
-            if isinstance(item, tuple) and len(item) == 3 and item[0] == "job_log":
-                _kind, job_id, line = item
-                if job_id == self._selected_job_id:
+            if isinstance(item, tuple) and len(item) == 3 and item[0] == "video_log":
+                _kind, video_id, line = item
+                if video_id == self._selected_video_id:
                     self._logs = f"{self._logs}\n{line}".strip()
                     changed = True
             elif item.startswith("__QUEUE_STARTED__:"):
-                self.refreshJobs()
-                self.selectedJobChanged.emit()
+                self.refreshVideos()
+                self.selectedVideoChanged.emit()
                 self.processingChanged.emit()
                 self._refresh_batch_model()
                 self.batchChanged.emit()
             elif item.startswith("__QUEUE_FINISHED__:"):
-                self.refreshJobs()
-                self.selectedJobChanged.emit()
+                self.refreshVideos()
+                self.selectedVideoChanged.emit()
                 self._refresh_batch_model()
                 self.batchChanged.emit()
             elif item == "__QUEUE_IDLE__":
@@ -2452,67 +2546,67 @@ class HaizFlowController(QObject):
                     continue
                 self._batch_running = False
                 self._batch_stop_requested = False
-                self.refreshJobs()
+                self.refreshVideos()
                 self.processingChanged.emit()
                 self.batchChanged.emit()
             elif item == "__QUEUE_CHANGED__":
-                self.refreshJobs()
-                self.selectedJobChanged.emit()
+                self.refreshVideos()
+                self.selectedVideoChanged.emit()
                 self.batchChanged.emit()
             elif item == "__THUMBNAILS_READY__":
                 self._thumbnail_refresh_running = False
-                self.refreshJobs()
+                self.refreshVideos()
         if changed:
             self.logsChanged.emit()
 
-    def _read_job_logs(self, job_id):
-        path = job_store.get_job_logs_path(job_id)
+    def _read_video_logs(self, video_id):
+        path = video_store.get_video_logs_path(video_id)
         if not os.path.exists(path):
             return ""
         with open(path, "r", encoding="utf-8") as file:
             return file.read()
 
     def _refresh_batch_model(self):
-        jobs = []
+        videos = []
         valid_ids = []
-        for job_id in self._batch_job_ids:
-            job = job_store.get_job(job_id)
-            if job:
-                job = self._ensure_job_dimensions(job)
-                valid_ids.append(job_id)
-                jobs.append(job)
-        self._batch_job_ids = valid_ids
-        self.batch_jobs.set_jobs(jobs)
+        for video_id in self._batch_video_ids:
+            video = video_store.get_video(video_id)
+            if video:
+                video = self._ensure_video_dimensions(video)
+                valid_ids.append(video_id)
+                videos.append(video)
+        self._batch_video_ids = valid_ids
+        self.batch_videos.set_videos(videos)
 
-    def _ensure_job_dimensions(self, job):
-        if job.video_width > 0 and job.video_height > 0:
-            return job
-        video_path = self._resolve_job_file(job, ("video_input", "input_video"), ("input", "video.mp4"))
+    def _ensure_video_dimensions(self, video):
+        if video.video_width > 0 and video.video_height > 0:
+            return video
+        video_path = self._resolve_video_file(video, ("video_input", "input_video"), ("input", "video.mp4"))
         try:
             width, height = get_video_dimensions(video_path)
         except RuntimeError:
-            return job
-        return job_store.update_job(job.job_id, video_width=width, video_height=height) or job
+            return video
+        return video_store.update_video(video.video_id, video_width=width, video_height=height) or video
 
     def _batch_dimension_groups(self):
         grouped = {}
-        for job_id in self._batch_job_ids:
-            job = job_store.get_job(job_id)
-            if not job:
+        for video_id in self._batch_video_ids:
+            video = video_store.get_video(video_id)
+            if not video:
                 continue
-            job = self._ensure_job_dimensions(job)
-            if job.video_width > 0 and job.video_height > 0:
-                size_key = f"{job.video_width}x{job.video_height}"
-                label = f"{job.video_width} x {job.video_height}"
+            video = self._ensure_video_dimensions(video)
+            if video.video_width > 0 and video.video_height > 0:
+                size_key = f"{video.video_width}x{video.video_height}"
+                label = f"{video.video_width} x {video.video_height}"
             else:
-                size_key = f"unknown:{job.job_id}"
+                size_key = f"unknown:{video.video_id}"
                 label = "Unknown size"
-            group = grouped.setdefault(size_key, {"size_key": size_key, "label": label, "jobs": []})
-            group["jobs"].append(job)
+            group = grouped.setdefault(size_key, {"size_key": size_key, "label": label, "videos": []})
+            group["videos"].append(video)
         return sorted(
             grouped.values(),
             key=lambda group: (
-                -(group["jobs"][0].video_width * group["jobs"][0].video_height),
+                -(group["videos"][0].video_width * group["videos"][0].video_height),
                 group["label"],
             ),
         )
@@ -2523,7 +2617,7 @@ class HaizFlowController(QObject):
     _build_project_summaries = staticmethod(build_project_summaries)
     _normalize_video_path = staticmethod(normalize_video_path)
     _collect_batch_video_paths = staticmethod(collect_batch_video_paths)
-    _resolve_job_file = staticmethod(resolve_job_file)
+    _resolve_video_file = staticmethod(resolve_video_file)
 
     def _language_label(self, code):
         return language_label(code, self._settings_language)
@@ -2545,12 +2639,12 @@ class HaizFlowController(QObject):
             return voice
         return supported_voices[0] if supported_voices else ""
 
-    def _load_job_preview(self, job):
-        self._subtitle_position_x = job.subtitle_style.position_x_percent
-        self._subtitle_position_y = job.subtitle_style.position_y_percent
-        self._caption_font_size = job.subtitle_style.font_size
-        self._subtitle_box_width = job.subtitle_style.box_width_percent
-        self._subtitle_box_height = job.subtitle_style.box_height_percent
+    def _load_video_preview(self, video):
+        self._subtitle_position_x = video.subtitle_style.position_x_percent
+        self._subtitle_position_y = video.subtitle_style.position_y_percent
+        self._caption_font_size = video.subtitle_style.font_size
+        self._subtitle_box_width = video.subtitle_style.box_width_percent
+        self._subtitle_box_height = video.subtitle_style.box_height_percent
         self.previewChanged.emit()
 
     @staticmethod
@@ -2583,10 +2677,10 @@ class HaizFlowController(QObject):
         if not group:
             self._clear_preview_edit_session()
             return
-        representative = group["jobs"][0]
-        video_path = self._resolve_job_file(representative, ("video_input", "input_video"), ("input", "video.mp4"))
+        representative = group["videos"][0]
+        video_path = self._resolve_video_file(representative, ("video_input", "input_video"), ("input", "video.mp4"))
         self._preview_edit_scope = "size_group"
-        self._preview_target_job_ids = [job.job_id for job in group["jobs"]]
+        self._preview_target_video_ids = [video.video_id for video in group["videos"]]
         self._preview_original_style = self._copy_subtitle_style(representative.subtitle_style)
         self._set_preview_style(representative.subtitle_style)
         index_label = f"{self._preview_group_index + 1}/{len(self._preview_group_keys)}"
@@ -2595,7 +2689,7 @@ class HaizFlowController(QObject):
 
     def _clear_preview_edit_session(self):
         self._preview_edit_scope = "draft"
-        self._preview_target_job_ids = []
+        self._preview_target_video_ids = []
         self._preview_group_keys = []
         self._preview_group_index = -1
         self._preview_original_style = None
@@ -2611,14 +2705,14 @@ class HaizFlowController(QObject):
         self._preview_title = title
         self._preview_interactive = interactive
         self._preview_source = QUrl.fromLocalFile(path).toString()
-        selected_job = job_store.get_job(self._selected_job_id) if self._selected_job_id else None
-        thumbnail_path = (selected_job.files or {}).get("thumbnail", "") if selected_job else ""
+        selected_video = video_store.get_video(self._selected_video_id) if self._selected_video_id else None
+        thumbnail_path = (selected_video.files or {}).get("thumbnail", "") if selected_video else ""
         if not os.path.exists(thumbnail_path):
-            thumbnail_path = self._job_thumbnail_path(selected_job.job_id) if selected_job else self._draft_thumbnail_path()
+            thumbnail_path = self._video_thumbnail_path(selected_video.video_id) if selected_video else self._draft_thumbnail_path()
             thumbnail_path = self._create_video_thumbnail_path(path, thumbnail_path)
-            if selected_job and thumbnail_path:
-                selected_job.files["thumbnail"] = thumbnail_path
-                job_store.save_job(selected_job)
+            if selected_video and thumbnail_path:
+                selected_video.files["thumbnail"] = thumbnail_path
+                video_store.save_video(selected_video)
         poster_source = thumbnail_source(thumbnail_path)
         self._preview_poster_source = poster_source or self._video_thumbnail_source
         self._preview_aspect_ratio = 16 / 9
@@ -2640,17 +2734,17 @@ class HaizFlowController(QObject):
         )
 
     @staticmethod
-    def _job_thumbnail_path(job_id: str) -> str:
-        return os.path.join(job_store.get_job_dir(job_id), "thumbnail.jpg")
+    def _video_thumbnail_path(video_id: str) -> str:
+        return os.path.join(video_store.get_video_dir(video_id), "thumbnail.jpg")
 
-    def _assign_project_thumbnail(self, job) -> None:
+    def _assign_project_thumbnail(self, video) -> None:
         thumbnail_path = self._create_video_thumbnail_path(
-            job.files["video_input"],
-            self._job_thumbnail_path(job.job_id),
+            video.files["video_input"],
+            self._video_thumbnail_path(video.video_id),
         )
         if thumbnail_path:
-            job.files["thumbnail"] = thumbnail_path
-            job_store.save_job(job)
+            video.files["thumbnail"] = thumbnail_path
+            video_store.save_video(video)
         draft_thumbnail = self._draft_thumbnail_path()
         if draft_thumbnail and os.path.isfile(draft_thumbnail):
             try:
@@ -2667,18 +2761,18 @@ class HaizFlowController(QObject):
 
     def _migrate_legacy_project_thumbnails(self) -> None:
         legacy_directory = os.path.join(RUNTIME_DATA_DIR, "cache", "thumbnails")
-        job_store.migrate_legacy_thumbnails(legacy_directory)
-        for job in job_store.list_jobs():
-            expected_path = self._job_thumbnail_path(job.job_id)
+        video_store.migrate_legacy_thumbnails(legacy_directory)
+        for video in video_store.list_videos():
+            expected_path = self._video_thumbnail_path(video.video_id)
             changed = False
             if not os.path.exists(expected_path):
-                source_path = self._resolve_job_file(job, ("video_input", "input_video"), ("input", "video.mp4"))
+                source_path = self._resolve_video_file(video, ("video_input", "input_video"), ("input", "video.mp4"))
                 created_path = self._create_video_thumbnail_path(source_path, expected_path)
                 if created_path:
-                    job.files["thumbnail"] = created_path
+                    video.files["thumbnail"] = created_path
                     changed = True
             if changed:
-                job_store.save_job(job)
+                video_store.save_video(video)
         if os.path.isdir(legacy_directory):
             try:
                 shutil.rmtree(legacy_directory)

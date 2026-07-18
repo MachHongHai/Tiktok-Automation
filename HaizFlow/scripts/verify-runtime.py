@@ -80,8 +80,8 @@ def main() -> int:
 
     if str(SRC) not in sys.path:
         sys.path.insert(0, str(SRC))
-    from haizflow.config import HYMT2_CPU_MODEL_REVISION, HYMT2_MODEL_REVISION
-    from haizflow.core.model_integrity import HYMT2_CPU_REVISION, HYMT2_GPU_REVISION
+    from haizflow.config import HYMT2_CPU_MODEL_REVISION, HYMT2_MODEL_REVISION, WHISPER_MODEL_REVISION
+    from haizflow.core.model_integrity import HYMT2_CPU_REVISION, HYMT2_GPU_REVISION, WHISPER_REVISION
 
     check(
         HYMT2_MODEL_REVISION == HYMT2_GPU_REVISION and len(HYMT2_GPU_REVISION) == 40,
@@ -91,6 +91,11 @@ def main() -> int:
     check(
         HYMT2_CPU_MODEL_REVISION == HYMT2_CPU_REVISION and len(HYMT2_CPU_REVISION) == 40,
         f"Pinned HY-MT2 CPU revision: {HYMT2_CPU_REVISION}",
+        failures,
+    )
+    check(
+        WHISPER_MODEL_REVISION == WHISPER_REVISION and len(WHISPER_REVISION) == 40,
+        f"Pinned Whisper revision: {WHISPER_REVISION}",
         failures,
     )
     try:
@@ -129,13 +134,14 @@ def main() -> int:
             "The pipeline supplies preloaded waveforms to WhisperX and does not depend on this decoder."
         )
 
-    from haizflow.config import HF_HOME, RUNTIME_DATA_DIR, TMP_DIR, TORCH_HOME
+    from haizflow.config import HF_HOME, MODELS_DIR, RUNTIME_DATA_DIR, TMP_DIR, TORCH_HOME
     from haizflow.core.runtime_probe import probe_runtime
 
     check(Path(RUNTIME_DATA_DIR).is_absolute(), f"Runtime data: {RUNTIME_DATA_DIR}", failures)
     check(Path(HF_HOME).is_absolute(), f"Hugging Face cache: {HF_HOME}", failures)
     check(Path(TORCH_HOME).is_absolute(), f"Torch cache: {TORCH_HOME}", failures)
-    for directory in (RUNTIME_DATA_DIR, HF_HOME, TORCH_HOME, TMP_DIR):
+    check(Path(MODELS_DIR).is_absolute(), f"Installed models: {MODELS_DIR}", failures)
+    for directory in (RUNTIME_DATA_DIR, MODELS_DIR, HF_HOME, TORCH_HOME, TMP_DIR):
         path = Path(directory)
         path.mkdir(parents=True, exist_ok=True)
         probe_path = path / f".runtime-write-{os.getpid()}"

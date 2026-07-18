@@ -1,15 +1,19 @@
 import gc
 import json
+import os
 import re
 import statistics
 import threading
+from pathlib import Path
 
 import torch
 import whisperx
 
-from haizflow.config import WHISPER_MODEL
+from haizflow.config import HF_HOME, MODELS_DIR, WHISPER_MODEL
 from haizflow.core.hardware import runtime_profile
-from haizflow.services.job_store import log_to_job
+from haizflow.core.model_integrity import ModelIntegrityError, verify_whisper_model
+from haizflow.core.paths import bundle_root
+from haizflow.services.video_store import log_to_video
 
 
 _MODEL_LOCK = threading.Lock()
@@ -25,8 +29,40 @@ _SENTENCE_END_CHARS = frozenset(".!?\u2026\u3002\uff01\uff1f")
 _SENTENCE_CLOSERS = frozenset("\"'\u2019\u201d)]}\u3009\u300b\u300d\u300f\u3011")
 
 
+def _whisper_model_source() -> tuple[str, bool]:
+    """Prefer the installer-owned pinned model and otherwise cache on the selected drive."""
+    if os.path.isdir(WHISPER_MODEL):
+        return os.path.abspath(WHISPER_MODEL), True
+    if WHISPER_MODEL != "small":
+        return WHISPER_MODEL, False
+    candidates = (
+        os.path.join(MODELS_DIR, "whisper", "small"),
+        str(bundle_root() / "models" / "whisper" / "small"),
+    )
+    for candidate in candidates:
+        if not os.path.isdir(candidate):
+            continue
+        try:
+            return str(verify_whisper_model(Path(candidate))), True
+        except ModelIntegrityError as exc:
+            raise RuntimeError(f"Installed Whisper model failed integrity verification: {exc}") from exc
+    return WHISPER_MODEL, False
+
+
+def _load_whisper_model(device: str, compute_type: str, threads: int):
+    source, local_only = _whisper_model_source()
+    return whisperx.load_model(
+        source,
+        device,
+        compute_type=compute_type,
+        threads=threads,
+        download_root=os.path.join(HF_HOME, "hub"),
+        local_files_only=local_only,
+    )
+
+
 def warm_whisperx_model():
-    """Load the ASR model once in the background so the first job starts promptly."""
+    """Load the ASR model once in the background so the first video starts promptly."""
     global _WARM_ASR_MODEL, _WARM_DEVICE
     with _MODEL_LOCK:
         if _WARM_ASR_MODEL is not None:
@@ -35,12 +71,7 @@ def warm_whisperx_model():
         device = "cuda" if profile.cuda_available else "cpu"
         compute_type = "float16" if device == "cuda" else "int8"
         try:
-            model = whisperx.load_model(
-                WHISPER_MODEL,
-                device,
-                compute_type=compute_type,
-                threads=profile.cpu_threads,
-            )
+            model = _load_whisper_model(device, compute_type, profile.cpu_threads)
         except Exception:
             _WARM_ASR_MODEL = None
             _WARM_DEVICE = None
@@ -65,11 +96,11 @@ def release_warm_whisperx_model():
         torch.cuda.empty_cache()
 
 
-def _release_cuda(job_id: str, stage: str) -> None:
+def _release_cuda(video_id: str, stage: str) -> None:
     gc.collect()
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
-        log_to_job(job_id, f"Released WhisperX VRAM after {stage}.")
+        log_to_video(video_id, f"Released WhisperX VRAM after {stage}.")
 
 
 def _value(item, name: str, default=None):
@@ -96,7 +127,7 @@ def _merge_transcript_text(left: str, right: str) -> str:
     return f"{left} {right}"
 
 
-def _detect_segment_languages(asr_model, audio, segments, fallback_language: str, job_id: str):
+def _detect_segment_languages(asr_model, audio, segments, fallback_language: str, video_id: str):
     """Detect one source language for each immutable sentence timestamp."""
     fallback_language = fallback_language or "en"
     detected_segments = []
@@ -119,12 +150,12 @@ def _detect_segment_languages(asr_model, audio, segments, fallback_language: str
                 if detected and confidence >= _SEGMENT_LANGUAGE_CONFIDENCE:
                     language = detected
                 else:
-                    log_to_job(
-                        job_id,
+                    log_to_video(
+                        video_id,
                         f"Sentence {index} language confidence {confidence:.2f} is low; using '{fallback_language}'.",
                     )
             except Exception as exc:
-                log_to_job(job_id, f"Sentence {index} language detection failed; using '{fallback_language}': {exc}")
+                log_to_video(video_id, f"Sentence {index} language detection failed; using '{fallback_language}': {exc}")
 
         segment_with_language = dict(segment)
         segment_with_language["language"] = language
@@ -134,11 +165,11 @@ def _detect_segment_languages(asr_model, audio, segments, fallback_language: str
 
     if counts:
         summary = ", ".join(f"{language}={count}" for language, count in sorted(counts.items()))
-        log_to_job(job_id, f"Detected languages per sentence: {summary}.")
+        log_to_video(video_id, f"Detected languages per sentence: {summary}.")
     return detected_segments
 
 
-def _retranscribe_mixed_language_segments(asr_model, audio, segments, primary_language: str, job_id: str):
+def _retranscribe_mixed_language_segments(asr_model, audio, segments, primary_language: str, video_id: str):
     """Correct switched-language text while preserving every original timestamp."""
     primary_language = primary_language or "en"
     corrected_segments = []
@@ -154,7 +185,7 @@ def _retranscribe_mixed_language_segments(asr_model, audio, segments, primary_la
             continue
 
         try:
-            log_to_job(job_id, f"Re-transcribing sentence {index} with detected language '{language}'.")
+            log_to_video(video_id, f"Re-transcribing sentence {index} with detected language '{language}'.")
             clip = audio[int(start * _AUDIO_SAMPLE_RATE): int(end * _AUDIO_SAMPLE_RATE)]
             local_result = asr_model.transcribe(clip, batch_size=1, language=language)
             corrected_text = ""
@@ -166,7 +197,7 @@ def _retranscribe_mixed_language_segments(asr_model, audio, segments, primary_la
             if corrected_text.strip():
                 corrected_segment["text"] = corrected_text.strip()
         except Exception as exc:
-            log_to_job(job_id, f"Could not re-transcribe sentence {index} in '{language}'; keeping its text: {exc}")
+            log_to_video(video_id, f"Could not re-transcribe sentence {index} in '{language}'; keeping its text: {exc}")
         corrected_segments.append(corrected_segment)
 
     return corrected_segments
@@ -325,7 +356,7 @@ def _alignment_quality(source_segment: dict, aligned_segments: list[dict]) -> tu
     return True, f"coverage={coverage_ratio:.2f}"
 
 
-def _align_segments_by_language(audio, segments, device: str, job_id: str, progress_callback=None):
+def _align_segments_by_language(audio, segments, device: str, video_id: str, progress_callback=None):
     """Align each source span and preserve it whenever the aligner is unreliable."""
     grouped_segments = {}
     ordered_languages = []
@@ -341,7 +372,7 @@ def _align_segments_by_language(audio, segments, device: str, job_id: str, progr
         language_segments = grouped_segments[language]
         align_model = None
         try:
-            log_to_job(job_id, f"Loading alignment model for language '{language}'.")
+            log_to_video(video_id, f"Loading alignment model for language '{language}'.")
             if progress_callback:
                 progress_callback("loading_alignment", f"Loading subtitle alignment for {language}")
             align_model, metadata = whisperx.load_align_model(language_code=language, device=device)
@@ -362,21 +393,21 @@ def _align_segments_by_language(audio, segments, device: str, job_id: str, progr
                     if is_valid:
                         aligned_segments.extend(candidate_segments)
                         continue
-                    log_to_job(
-                        job_id,
+                    log_to_video(
+                        video_id,
                         f"WARNING: Rejected '{language}' alignment for source span {source_index} "
                         f"({quality_detail}). Preserving Whisper timing with proportional sentence boundaries.",
                     )
                 except Exception as exc:
-                    log_to_job(
-                        job_id,
+                    log_to_video(
+                        video_id,
                         f"WARNING: Alignment failed for '{language}' source span {source_index}. "
                         f"Preserving Whisper timing: {exc}",
                     )
                 aligned_segments.extend(_split_segment_proportionally(source_segment))
         except Exception as exc:
-            log_to_job(
-                job_id,
+            log_to_video(
+                video_id,
                 f"WARNING: Alignment model failed or is unsupported for '{language}'. "
                 f"Preserving Whisper spans with proportional sentence boundaries: {exc}",
             )
@@ -385,7 +416,7 @@ def _align_segments_by_language(audio, segments, device: str, job_id: str, progr
         finally:
             if align_model is not None:
                 del align_model
-            _release_cuda(job_id, f"{language} alignment")
+            _release_cuda(video_id, f"{language} alignment")
 
     aligned_segments.sort(key=lambda segment: float(segment.get("start", 0.0)))
     return aligned_segments
@@ -410,14 +441,14 @@ def _validate_timestamp_invariants(segments: list[dict], audio_duration: float) 
         previous_end = end
 
 
-def transcribe(audio_path: str, output_json_path: str, source_language: str, job_id: str, progress_callback=None):
+def transcribe(audio_path: str, output_json_path: str, source_language: str, video_id: str, progress_callback=None):
     """Transcribe through WhisperX and align sentence timestamps per language."""
-    log_to_job(job_id, f"Initializing WhisperX with model '{WHISPER_MODEL}'.")
+    log_to_video(video_id, f"Initializing WhisperX with model '{WHISPER_MODEL}'.")
     profile = runtime_profile()
     device = "cuda" if profile.cuda_available else "cpu"
     compute_type = "float16" if device == "cuda" else "int8"
-    log_to_job(
-        job_id,
+    log_to_video(
+        video_id,
         f"WhisperX device: {device}, compute type: {compute_type}, "
         f"batch size: {profile.whisper_batch_size}, threads: {profile.cpu_threads}.",
     )
@@ -426,26 +457,21 @@ def transcribe(audio_path: str, output_json_path: str, source_language: str, job
     using_warm_model = False
     audio = None
     try:
-        log_to_job(job_id, "Loading WhisperX transcription model.")
+        log_to_video(video_id, "Loading WhisperX transcription model.")
         if progress_callback:
             progress_callback("loading_model", "Loading WhisperX speech model")
         with _MODEL_LOCK:
             if _WARM_ASR_MODEL is not None and _WARM_DEVICE == device:
                 asr_model = _WARM_ASR_MODEL
                 using_warm_model = True
-                log_to_job(job_id, "Reusing warmed WhisperX speech model.")
+                log_to_video(video_id, "Reusing warmed WhisperX speech model.")
             else:
-                asr_model = whisperx.load_model(
-                    WHISPER_MODEL,
-                    device,
-                    compute_type=compute_type,
-                    threads=profile.cpu_threads,
-                )
+                asr_model = _load_whisper_model(device, compute_type, profile.cpu_threads)
         audio = whisperx.load_audio(audio_path)
         if source_language != "auto":
-            log_to_job(job_id, f"Ignoring legacy source language '{source_language}'; using automatic detection.")
+            log_to_video(video_id, f"Ignoring legacy source language '{source_language}'; using automatic detection.")
 
-        log_to_job(job_id, "Running WhisperX batched transcription with automatic language detection.")
+        log_to_video(video_id, "Running WhisperX batched transcription with automatic language detection.")
         if progress_callback:
             progress_callback("transcribing", "Transcribing speech")
         result = asr_model.transcribe(
@@ -465,7 +491,7 @@ def transcribe(audio_path: str, output_json_path: str, source_language: str, job
         ]
         if not initial_segments:
             raise RuntimeError("WhisperX did not return any speech segments.")
-        log_to_job(job_id, f"Transcription completed. Primary detected language: '{detected_language}'.")
+        log_to_video(video_id, f"Transcription completed. Primary detected language: '{detected_language}'.")
         if progress_callback:
             progress_callback("transcribed", f"Detected {detected_language or 'unknown'} speech")
 
@@ -473,7 +499,7 @@ def transcribe(audio_path: str, output_json_path: str, source_language: str, job
             audio,
             initial_segments,
             device,
-            job_id,
+            video_id,
             progress_callback=progress_callback,
         )
         if progress_callback:
@@ -484,14 +510,14 @@ def transcribe(audio_path: str, output_json_path: str, source_language: str, job
             audio,
             sentence_segments,
             detected_language or "en",
-            job_id,
+            video_id,
         )
         source_segments = _retranscribe_mixed_language_segments(
             asr_model,
             audio,
             source_segments,
             detected_language or "en",
-            job_id,
+            video_id,
         )
         has_language_switch = any(
             (segment.get("language") or detected_language or "en") != (detected_language or "en")
@@ -502,12 +528,12 @@ def transcribe(audio_path: str, output_json_path: str, source_language: str, job
                 audio,
                 source_segments,
                 device,
-                job_id,
+                video_id,
                 progress_callback=None,
             )
         else:
             aligned_segments = source_segments
-            log_to_job(job_id, "Keeping validated sentence timestamps; no language-switch realignment is needed.")
+            log_to_video(video_id, "Keeping validated sentence timestamps; no language-switch realignment is needed.")
 
         output_segments = []
         for segment in aligned_segments:
@@ -533,7 +559,7 @@ def transcribe(audio_path: str, output_json_path: str, source_language: str, job
         with open(output_json_path, "w", encoding="utf-8") as file:
             json.dump(output_segments, file, ensure_ascii=False, indent=2)
 
-        log_to_job(job_id, f"Saved {len(output_segments)} timestamp-locked source sentences to: {output_json_path}")
+        log_to_video(video_id, f"Saved {len(output_segments)} timestamp-locked source sentences to: {output_json_path}")
         if progress_callback:
             progress_callback("saved", f"Prepared {len(output_segments)} timestamp-locked sentences")
         return output_segments, detected_language
@@ -542,4 +568,4 @@ def transcribe(audio_path: str, output_json_path: str, source_language: str, job
             del asr_model
         if audio is not None:
             del audio
-        _release_cuda(job_id, "WhisperX cleanup")
+        _release_cuda(video_id, "WhisperX cleanup")

@@ -4,8 +4,8 @@ from PySide6.QtCore import QAbstractListModel, QModelIndex, Qt
 
 from haizflow.desktop.media import thumbnail_source
 
-class JobListModel(QAbstractListModel):
-    JobIdRole = Qt.ItemDataRole.UserRole + 1
+class VideoListModel(QAbstractListModel):
+    VideoIdRole = Qt.ItemDataRole.UserRole + 1
     FileRole = Qt.ItemDataRole.UserRole + 2
     ModeRole = Qt.ItemDataRole.UserRole + 3
     StatusRole = Qt.ItemDataRole.UserRole + 4
@@ -19,32 +19,32 @@ class JobListModel(QAbstractListModel):
 
     def __init__(self):
         super().__init__()
-        self._jobs = []
+        self._videos = []
 
     def rowCount(self, parent=QModelIndex()):
-        return 0 if parent.isValid() else len(self._jobs)
+        return 0 if parent.isValid() else len(self._videos)
 
     def data(self, index, role=Qt.ItemDataRole.DisplayRole):
-        if not index.isValid() or index.row() < 0 or index.row() >= len(self._jobs):
+        if not index.isValid() or index.row() < 0 or index.row() >= len(self._videos):
             return None
-        job = self._jobs[index.row()]
+        video = self._videos[index.row()]
         return {
-            self.JobIdRole: job.job_id,
-            self.FileRole: job.original_filename,
+            self.VideoIdRole: video.video_id,
+            self.FileRole: video.original_filename,
             self.ModeRole: "Full Auto",
-            self.StatusRole: job.status,
-            self.StepRole: job.step,
-            self.UpdatedRole: job.updated_at,
-            self.ProgressRole: job.progress,
-            self.ThumbnailRole: self._thumbnail_source(job),
-            self.ProjectNameRole: job.project_name or job.original_filename,
-            self.VideoSizeRole: self._video_size(job),
-            self.SubtitleOverrideRole: bool(getattr(job, "subtitle_override", False)),
+            self.StatusRole: video.status,
+            self.StepRole: video.step,
+            self.UpdatedRole: video.updated_at,
+            self.ProgressRole: video.progress,
+            self.ThumbnailRole: self._thumbnail_source(video),
+            self.ProjectNameRole: video.project_name or video.original_filename,
+            self.VideoSizeRole: self._video_size(video),
+            self.SubtitleOverrideRole: bool(getattr(video, "subtitle_override", False)),
         }.get(role)
 
     def roleNames(self):
         return {
-            self.JobIdRole: b"jobId",
+            self.VideoIdRole: b"videoId",
             self.FileRole: b"fileName",
             self.ModeRole: b"mode",
             self.StatusRole: b"status",
@@ -57,43 +57,43 @@ class JobListModel(QAbstractListModel):
             self.SubtitleOverrideRole: b"subtitleOverride",
         }
 
-    def set_jobs(self, jobs):
-        current_ids = [job.job_id for job in self._jobs]
-        next_ids = [job.job_id for job in jobs]
+    def set_videos(self, videos):
+        current_ids = [video.video_id for video in self._videos]
+        next_ids = [video.video_id for video in videos]
         if current_ids == next_ids:
-            self._jobs = jobs
-            if jobs:
+            self._videos = videos
+            if videos:
                 self.dataChanged.emit(
                     self.index(0, 0),
-                    self.index(len(jobs) - 1, 0),
+                    self.index(len(videos) - 1, 0),
                     list(self.roleNames().keys()),
                 )
             return
         self.beginResetModel()
-        self._jobs = jobs
+        self._videos = videos
         self.endResetModel()
 
-    def job_at(self, row: int):
-        if row < 0 or row >= len(self._jobs):
+    def video_at(self, row: int):
+        if row < 0 or row >= len(self._videos):
             return None
-        return self._jobs[row]
+        return self._videos[row]
 
     @staticmethod
-    def _thumbnail_source(job):
-        path = job.files.get("thumbnail") if job else ""
+    def _thumbnail_source(video):
+        path = video.files.get("thumbnail") if video else ""
         return thumbnail_source(path)
 
     @staticmethod
-    def _video_size(job):
-        width = int(getattr(job, "video_width", 0) or 0)
-        height = int(getattr(job, "video_height", 0) or 0)
+    def _video_size(video):
+        width = int(getattr(video, "video_width", 0) or 0)
+        height = int(getattr(video, "video_height", 0) or 0)
         return f"{width} x {height}" if width and height else "Unknown size"
 
 
 class ProjectListModel(QAbstractListModel):
     ProjectNameRole = Qt.ItemDataRole.UserRole + 1
     ProjectTypeRole = Qt.ItemDataRole.UserRole + 2
-    JobCountRole = Qt.ItemDataRole.UserRole + 3
+    VideoCountRole = Qt.ItemDataRole.UserRole + 3
     StatusRole = Qt.ItemDataRole.UserRole + 4
     ProgressRole = Qt.ItemDataRole.UserRole + 5
     ThumbnailRole = Qt.ItemDataRole.UserRole + 6
@@ -112,7 +112,7 @@ class ProjectListModel(QAbstractListModel):
         return {
             self.ProjectNameRole: project["project_name"],
             self.ProjectTypeRole: project["project_type"],
-            self.JobCountRole: project["job_count"],
+            self.VideoCountRole: project["video_count"],
             self.StatusRole: project["status"],
             self.ProgressRole: project["progress"],
             self.ThumbnailRole: project["thumbnail_source"],
@@ -122,7 +122,7 @@ class ProjectListModel(QAbstractListModel):
         return {
             self.ProjectNameRole: b"projectName",
             self.ProjectTypeRole: b"projectType",
-            self.JobCountRole: b"jobCount",
+            self.VideoCountRole: b"videoCount",
             self.StatusRole: b"status",
             self.ProgressRole: b"progress",
             self.ThumbnailRole: b"thumbnailSource",
@@ -275,19 +275,19 @@ class TaskListModel(QAbstractListModel):
             self.DetailRole: b"detail",
         }
 
-    def set_job(self, job):
+    def set_video(self, video):
         self.beginResetModel()
-        self._tasks = self._build_tasks(job)
+        self._tasks = self._build_tasks(video)
         self.endResetModel()
 
-    def _build_tasks(self, job):
-        current_step = job.step if job else "pending"
-        status = job.status if job else "pending"
+    def _build_tasks(self, video):
+        current_step = video.step if video else "pending"
+        status = video.status if video else "pending"
         step_keys = [key for key, _name in self.STEPS]
         current_index = step_keys.index(current_step) if current_step in step_keys else -1
         tasks = []
         for index, (key, name) in enumerate(self.STEPS):
-            if not job:
+            if not video:
                 state = "pending"
             elif status == "done":
                 state = "done"

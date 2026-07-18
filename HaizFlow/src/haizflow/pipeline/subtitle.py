@@ -4,7 +4,7 @@ import re
 
 import srt
 
-from haizflow.services.job_store import log_to_job
+from haizflow.services.video_store import log_to_video
 
 
 def split_text_by_length(text: str, max_chars: int) -> str:
@@ -73,9 +73,9 @@ def split_segment_into_cues(segment: dict, max_chars_per_line: int) -> list[dict
     return cues
 
 
-def generate_srt(segments_json_path: str, output_srt_path: str, max_chars_per_line: int, job_id: str):
+def generate_srt(segments_json_path: str, output_srt_path: str, max_chars_per_line: int, video_id: str):
     """Write short, timed subtitle cues instead of keeping each transcript block on screen."""
-    log_to_job(job_id, f"Compiling sequential SRT cues (Max characters per line: {max_chars_per_line})...")
+    log_to_video(video_id, f"Compiling sequential SRT cues (Max characters per line: {max_chars_per_line})...")
     with open(segments_json_path, "r", encoding="utf-8") as file:
         segments = json.load(file)
 
@@ -90,7 +90,7 @@ def generate_srt(segments_json_path: str, output_srt_path: str, max_chars_per_li
             ))
     with open(output_srt_path, "w", encoding="utf-8") as file:
         file.write(srt.compose(subtitles))
-    log_to_job(job_id, f"Saved {len(subtitles)} sequential subtitle cues to: {output_srt_path}")
+    log_to_video(video_id, f"Saved {len(subtitles)} sequential subtitle cues to: {output_srt_path}")
 
 
 def parse_srt_to_segments(srt_path: str) -> list:

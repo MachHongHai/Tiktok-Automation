@@ -1,6 +1,8 @@
 import json
+import os
 import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -15,6 +17,29 @@ from haizflow.core import runtime_probe
 
 
 class RuntimeProbeTests(unittest.TestCase):
+    def test_smoke_runtime_override_cannot_be_replaced_by_dotenv(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            environment = os.environ.copy()
+            environment["PYTHONPATH"] = str(SRC)
+            environment["HAIZFLOW_SMOKE_TEST"] = "1"
+            environment["RUNTIME_DATA_DIR"] = temporary
+            completed = subprocess.run(
+                [
+                    sys.executable,
+                    "-c",
+                    "from haizflow.config import RUNTIME_DATA_DIR; print(RUNTIME_DATA_DIR)",
+                ],
+                cwd=ROOT,
+                env=environment,
+                capture_output=True,
+                text=True,
+                timeout=15,
+                check=False,
+            )
+
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertEqual(Path(completed.stdout.strip()).resolve(), Path(temporary).resolve())
+
     def test_native_windows_exit_codes_are_classified(self):
         self.assertIn("CPU instruction", runtime_probe._native_exit_message(0xC000001D))
         self.assertIn("DLL", runtime_probe._native_exit_message(0xC0000135))

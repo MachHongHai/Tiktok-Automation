@@ -3,7 +3,7 @@
 import os
 
 from haizflow.desktop.catalog import EDGE_TTS_VOICES_BY_LANGUAGE, POPULAR_TARGET_LANGUAGES
-from haizflow.desktop.models import JobListModel
+from haizflow.desktop.models import VideoListModel
 from haizflow.services import project_store
 
 
@@ -27,7 +27,7 @@ VIETNAMESE_LANGUAGE_NAMES = {
 }
 
 
-def build_project_summaries(jobs, persisted_projects=None):
+def build_project_summaries(videos, persisted_projects=None):
     grouped = {}
     for persisted in persisted_projects or []:
         key = persisted.get("key")
@@ -38,21 +38,21 @@ def build_project_summaries(jobs, persisted_projects=None):
             "project_name": persisted["project_name"],
             "project_directory": persisted.get("project_directory", ""),
             "project_type": "batch" if persisted.get("project_type") == "batch" else "single",
-            "jobs": [],
+            "videos": [],
             "updated_at": persisted.get("updated_at", ""),
         }
-    for job in jobs:
-        project_type = "batch" if getattr(job, "project_type", "single") == "batch" else "single"
-        project_name = job.project_name or os.path.splitext(job.original_filename)[0]
-        project_directory = job.project_directory or ""
-        key = str(getattr(job, "project_key", "") or "")
-        # A persisted job is migrated to an immutable project key when it is
-        # read.  Plain presenter test data and truly legacy jobs still need a
+    for video in videos:
+        project_type = "batch" if getattr(video, "project_type", "single") == "batch" else "single"
+        project_name = video.project_name or os.path.splitext(video.original_filename)[0]
+        project_directory = video.project_directory or ""
+        key = str(getattr(video, "project_key", "") or "")
+        # A persisted video is migrated to an immutable project key when it is
+        # read.  Plain presenter test data and truly legacy videos still need a
         # deterministic grouping key without consulting unrelated app data.
         if not key and project_directory:
             key = project_store.project_key(project_name, project_directory, project_type)
         if not key:
-            key = f"legacy:{job.job_id}"
+            key = f"legacy:{video.video_id}"
         project = grouped.setdefault(
             key,
             {
@@ -60,20 +60,20 @@ def build_project_summaries(jobs, persisted_projects=None):
                 "project_name": project_name,
                 "project_directory": project_directory,
                 "project_type": project_type,
-                "jobs": [],
-                "updated_at": job.updated_at,
+                "videos": [],
+                "updated_at": video.updated_at,
             },
         )
-        project["jobs"].append(job)
+        project["videos"].append(video)
 
     summaries = []
     for project in grouped.values():
-        project_jobs = project["jobs"]
-        if not project_jobs:
+        project_videos = project["videos"]
+        if not project_videos:
             summaries.append(
                 {
                     **project,
-                    "job_count": 0,
+                    "video_count": 0,
                     "status": "empty",
                     "progress": 0,
                     "thumbnail_source": "",
@@ -81,7 +81,7 @@ def build_project_summaries(jobs, persisted_projects=None):
                 }
             )
             continue
-        statuses = {job.status for job in project_jobs}
+        statuses = {video.status for video in project_videos}
         if "processing" in statuses:
             status = "processing"
         elif "awaiting_review" in statuses:
@@ -90,27 +90,27 @@ def build_project_summaries(jobs, persisted_projects=None):
             status = "paused"
         elif "pending" in statuses:
             status = "pending"
-        elif all(job.status == "done" for job in project_jobs):
+        elif all(video.status == "done" for video in project_videos):
             status = "done"
         elif "failed" in statuses:
             status = "failed"
         elif "cancelled" in statuses:
             status = "cancelled"
         else:
-            status = project_jobs[0].status
+            status = project_videos[0].status
         thumbnail_source = ""
-        for job in project_jobs:
-            thumbnail_source = JobListModel._thumbnail_source(job)
+        for video in project_videos:
+            thumbnail_source = VideoListModel._thumbnail_source(video)
             if thumbnail_source:
                 break
         summaries.append(
             {
                 **project,
-                "job_count": len(project_jobs),
+                "video_count": len(project_videos),
                 "status": status,
-                "progress": round(sum(job.progress for job in project_jobs) / len(project_jobs)),
+                "progress": round(sum(video.progress for video in project_videos) / len(project_videos)),
                 "thumbnail_source": thumbnail_source,
-                "updated_at": max(job.updated_at for job in project_jobs),
+                "updated_at": max(video.updated_at for video in project_videos),
             }
         )
     return sorted(summaries, key=lambda project: project["updated_at"], reverse=True)
