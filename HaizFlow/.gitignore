@@ -1,0 +1,78 @@
+# HaizFlow desktop ignore rules
+
+# Python virtual environments
+.venv/
+venv/
+env/
+ENV/
+python/
+
+# Legacy Node folders, if any remain locally
+node_modules/
+frontend/node_modules/
+package-lock.json
+yarn.lock
+pnpm-lock.yaml
+
+# Runtime data (models, caches, logs, jobs)
+data/
+.cache/
+**/.cache/
+.pytest_cache/
+.ipynb_checkpoints/
+
+# Large binaries
+runtime/bin/
+runtime/compliance/
+**/bin/*.exe
+**/bin/ollama/
+*.exe
+*.dll
+*.dylib
+*.so
+
+# User data and temporary media
+storage/
+**/temp/
+*.log
+
+# Local media used only for manual pipeline smoke tests
+test/*.mp4
+test/*.mov
+test/*.mkv
+
+# Build artifacts
+frontend/dist/
+dist/
+build/
+out/
+
+# Environment configs
+.env
+.env*.local
+
+# Legacy paths from the old web/backend layout
+backend/
+frontend/
+
+# Python bytecode and runtime
+__pycache__/
+**/*.pyc
+**/*.pyo
+**/*.pyd
+*.egg-info/
+**/*.egg-info/
+
+# IDEs and editors
+.vscode/
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.swp
+
+# OS files
+.DS_Store
+Thumbs.db
+desktop.ini

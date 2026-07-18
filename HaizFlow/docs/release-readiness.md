@@ -1,0 +1,111 @@
+# Tiêu chuẩn sẵn sàng phát hành
+
+Tài liệu này là nguồn duy nhất theo dõi các rủi ro phát hành của ứng dụng Windows. Mỗi bản release phải cập nhật trạng thái, chạy toàn bộ release gate và lưu `BUILD-INFO.json` cùng `SHA256SUMS.txt` trong artifact.
+
+Ngày rà soát: 2026-07-16
+
+## Quy ước trạng thái
+
+- **Hoàn tất:** đã có implementation và kiểm thử tự động.
+- **Chặn phát hành:** chưa được phép phát hành công khai cho đến khi điều kiện được đáp ứng.
+- **Còn lại:** chưa phải blocker của beta nội bộ nhưng phải xử lý trước production rộng.
+
+## Danh sách kiểm soát
+
+| ID | Hạng mục | Trạng thái | Điều kiện nghiệm thu |
+| --- | --- | --- | --- |
+| 1 | Định danh và xóa project an toàn | **Hoàn tất** | Project mới dùng UUID; project đơn/batch cùng tên có root riêng; legacy root được giữ; manifest, shared-root và path traversal được kiểm tra trước khi xóa. |
+| 2 | License và third-party compliance | **Runtime đã nâng cấp, còn legal gate** | Source code dùng Apache-2.0; FFmpeg đã nâng lên 8.1.2 Essentials, pin SHA-256 và kèm source archive có chữ ký. Build sinh notices từ đúng `.venv`. Trước khi công khai vẫn phải cung cấp corresponding source/build material của các thư viện GPL liên kết tĩnh và được người chịu trách nhiệm pháp lý duyệt. |
+| 3 | Frozen acceptance và artifact mới | **Hoàn tất và đã kiểm chứng** | Build xóa artifact cũ có kiểm soát, tạo metadata/checksum, chạy self-test, CPU runtime probe, GPU probe khi khả dụng và Qt/QML smoke với data tạm. Artifact ngày 2026-07-16 đã vượt qua toàn bộ gate. |
+| 4 | Installer, nâng cấp và code signing | **Chặn phát hành** | Có Inno Setup/WiX/MSIX, uninstall sạch, giữ project khi nâng cấp, version resource và chữ ký Authenticode hợp lệ. |
+| 5 | Khóa revision và checksum model | **Hoàn tất** | GPU repo khóa revision `9a341cd1…`, CPU repo khóa `1cd52087…`; GGUF và toàn bộ snapshot Transformers có size/SHA-256 cố định. Download, cache, model bundle, checkpoint và release metadata đều dùng revision này; model sai integrity bị từ chối. |
+| 6 | Single-instance ứng dụng | **Hoàn tất** | `QLocalServer` tạo named pipe theo user. Instance thứ hai gửi yêu cầu activate rồi thoát; instance chính khôi phục cửa sổ. Stale server được xử lý và smoke mode không chiếm khóa. Khóa file/index là phạm vi riêng của ID 7. |
+| 7 | Phục hồi project index | **Hoàn tất** | `projects.json` được khóa liên tiến trình, ghi atomic, giữ last-known-good `.bak`, sao chép bản hỏng sang quarantine và rebuild từ manifest trong các project root đã đăng ký. Backup được hợp nhất với manifest mới hơn; lỗi không thể phục hồi chặn ghi thay vì tạo index rỗng. |
+| 8 | Schema migration | **Hoàn tất** | Project và video metadata dùng schema v4. Migration chạy tuần tự, lưu `.schema-migration.bak` trước khi ghi, bổ sung khóa project UUID bất biến, giữ nguyên project root legacy và từ chối schema tương lai để tránh downgrade dữ liệu. |
+| 9 | Dependency lock tái lập | **Hoàn tất** | `requirements-lock-py313-win64.txt` khóa 137 dependency trực tiếp/gián tiếp bằng SHA-256 cho Windows x64/Python 3.13; Torch khóa đúng biến thể cu128. Manifest fingerprint phát hiện source/lock lệch, installer dùng `--require-hashes`, build gate đối chiếu toàn bộ `.venv`. |
+| 10 | Disk preflight và cache policy | **Còn lại** | Tính dung lượng theo component/model/video, kiểm tra trước tải/build và có cleanup UI. Mốc cố định 2 GB không đủ cho production. |
+| 11 | Mô tả offline và quyền riêng tư | **Chặn phát hành** | UI và README nói rõ WhisperX/HY-MT2 local, Edge TTS và tải URL cần mạng; có thông báo dữ liệu gửi ra ngoài và hành vi khi offline. |
+| 12 | Chẩn đoán production | **Còn lại** | Log rotation, Qt/thread exception hooks, build ID và chức năng export diagnostics có redaction. |
+
+## License gate
+
+Các nguồn chính thức dùng để xác định nghĩa vụ:
+
+- Qt for Python licensing: https://doc.qt.io/qtforpython-6/licenses.html
+- FFmpeg legal checklist: https://ffmpeg.org/legal.html
+- FFmpeg license: https://ffmpeg.org/doxygen/trunk/md_LICENSE.html
+- HY-MT2 model card: https://huggingface.co/tencent/Hy-MT2-1.8B
+- Edge TTS repository và mô tả online service: https://github.com/rany2/edge-tts
+
+Mỗi artifact phải chứa:
+
+```text
+LICENSE.txt
+NOTICE.txt
+THIRD_PARTY_NOTICES.md
+licenses/
+BUILD-INFO.json
+SHA256SUMS.txt
+```
+
+`scripts/generate-third-party-notices.py --strict` phải thành công. Runtime hiện dùng `8.1.2-essentials_build-www.gyan.dev`, được pin bằng binary SHA-256 và manifest. Artifact kèm source archive chính thức `ffmpeg-8.1.2.tar.xz`, chữ ký PGP, license và README của binary package. Người phát hành vẫn phải cung cấp complete corresponding source/build material của các thư viện GPL được liên kết tĩnh; riêng tarball FFmpeg upstream chưa đủ để tự khẳng định hoàn tất toàn bộ nghĩa vụ này.
+
+## Frozen release gate
+
+Kết quả frozen bên dưới là mốc lịch sử trước khi hoàn thiện ID 5 và ID 6. Theo yêu cầu hiện tại, EXE chưa được build lại; do đó artifact cũ không được xem là release candidate cho source mới.
+
+Kết quả kiểm chứng source hiện tại (2026-07-16):
+
+- 113/113 unit và integration test thành công, gồm recovery, migration, dependency lock và khóa liên tiến trình.
+- Qt/QML source smoke test thành công.
+- Runtime gate xác nhận đúng hai revision HY-MT2, CPU/GPU native runtime và FFmpeg.
+- Integration test liên tiến trình xác nhận instance thứ hai kích hoạt instance chính rồi thoát.
+
+Mốc frozen trước đó:
+
+- Artifact: `dist\HaizFlow`, PyInstaller onedir, không nhúng model.
+- Quy mô: 11.404 file, 5,38 GiB.
+- Đã đối chiếu thành công toàn bộ 11.404 SHA-256 trong `SHA256SUMS.txt`.
+- Frozen self-test, FFmpeg/FFprobe, CPU runtime probe, GPU runtime probe và Qt/QML startup đều thành công.
+- Bộ unit test source tại mốc frozen: 98/98 thành công.
+- `BUILD-INFO.json` ghi rõ commit, branch, dirty state, Python và trạng thái model bundle.
+
+Build chuẩn:
+
+```powershell
+.\scripts\build-exe.ps1
+```
+
+Build offline có model:
+
+```powershell
+.\scripts\build-exe.ps1 -IncludeCpuModel -IncludeGpuModel
+```
+
+Quy trình bắt buộc của script:
+
+1. Kiểm tra source runtime và package version.
+2. Sinh third-party notices ở strict mode.
+3. Xóa riêng artifact `dist\HaizFlow` cũ sau khi xác thực đường dẫn.
+4. Build PyInstaller `--onedir`.
+5. Chép application license, notices và license texts.
+6. Tạo `BUILD-INFO.json` và SHA-256 cho mọi file.
+7. Chạy frozen self-test và FFmpeg/FFprobe.
+8. Chạy CPU native runtime probe; chạy GPU probe nếu CUDA khả dụng.
+9. Khởi tạo Qt/QML/Multimedia bằng data tạm, không warm model, rồi tự thoát.
+
+`-SkipFrozenSmokeTest` chỉ dành cho chẩn đoán build, không được dùng để tạo artifact phát hành.
+
+## Ma trận nghiệm thu trước production
+
+- Windows 10 và Windows 11 x64 sạch.
+- Máy CPU-only Intel và AMD với 8 GB, 16 GB và 32 GB RAM.
+- NVIDIA 6 GB, 8 GB và lớn hơn; GPU không hỗ trợ BF16; driver cũ hoặc thiếu driver.
+- Không mạng, mạng chậm, Edge TTS gián đoạn và URL extractor thay đổi.
+- Tài khoản Windows và đường dẫn project có Unicode.
+- Ổ gần đầy, project trên ổ rời, sleep/hibernate và mất nguồn GPU giữa pipeline.
+- Mở app hai lần, nâng cấp từ dữ liệu legacy, pause/resume/restart và batch queue dài.
+
+## Quyết định phát hành
+
+Beta nội bộ được phép khi ID 1 và ID 3 đã qua release gate. Phát hành công khai bị chặn cho đến khi hoàn tất tối thiểu ID 2, 4, 5, 9 và 11. Tài liệu này không thay thế tư vấn pháp lý chuyên môn.

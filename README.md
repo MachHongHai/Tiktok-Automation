@@ -1,289 +1,345 @@
-# Auto Dub Video Local
+# HaizFlow
 
-**Tài liệu:** [English](README.md) | Tiếng Việt
+> **100% free, local-first video dubbing automation for Windows.**
+>
+> HaizFlow does not require a paid API key, subscription, cloud account, or per-video fee. Projects, source media, model caches, logs, checkpoints, and exports remain on the user's machine.
 
-Auto Dub Video Local là công cụ desktop Windows dùng để tạo video đã dịch, lồng tiếng và chèn phụ đề trên máy cá nhân. Dự án hướng đến mô hình local-first: video nguồn, file trung gian, log, cache model và video xuất đều nằm ở đường dẫn do người dùng kiểm soát.
+[English](#english) | [Tiếng Việt](#tieng-viet)
 
-> Chỉ xử lý video bạn sở hữu hoặc có quyền sử dụng. Người dùng chịu trách nhiệm về bản quyền, quyền riêng tư và quy định pháp luật liên quan đến video nguồn và video xuất.
+---
 
-## Miễn phí và Local-First
+<a id="english"></a>
 
-Đây là dự án **miễn phí 100% để cài đặt và sử dụng pipeline hiện tại**: không subscription, không API key trả phí, không hàng đợi xử lý trên server và không upload video lên backend của ứng dụng.
+## English
 
-- WhisperX nhận dạng lời nói và căn thời gian chạy local trên máy.
-- HY-MT2 dịch phụ đề chạy local trên máy.
-- Cache checkpoint, tạo phụ đề, ghép audio và render video chạy local.
-- Video nguồn, audio trung gian, model cache, log và output không bị gửi đến dịch vụ AI cloud của ứng dụng.
+### Overview
 
-Ứng dụng được chạy **trên máy của người dùng**, không phải kiểu gửi video cho một AI cloud xử lý rồi nhận kết quả. Nhờ đó không phát sinh chi phí theo phút video hoặc theo số lần dịch, đồng thời dữ liệu nhạy cảm ở lại trên máy.
+HaizFlow is a desktop application for turning source videos into translated, voiced, captioned exports through a local, project-based workflow. It is built for creators and small production teams who want practical automation without handing full videos to a SaaS backend.
 
-Riêng Edge TTS là bước tạo giọng cần Internet. Text của các câu đã dịch được gửi tới dịch vụ Edge TTS để sinh audio; tool không cần API key trả phí cho bước này.
+The application separates **single-video work** from **batch work**, preserves each project's media and processing state locally, and lets the user pause, resume, restart, review translations, or replace the source without losing control of the workflow.
 
-## Chức năng
+### Why HaizFlow
 
-- Import video MP4, MOV hoặc MKV vào project đặt tên riêng.
-- Nhập trực tiếp video từ liên kết YouTube, TikTok hoặc Douyin; app hiển thị metadata và tiến độ trước khi đưa video vào project.
-- Tách riêng thư viện project `Đơn lẻ` và `Hàng loạt`; project trống được lưu ngay khi tạo.
-- Project hàng loạt có thể nhận tệp, thư mục, liên kết video hoặc quét kênh theo độ mới hay lượt xem. YouTube tách riêng Shorts và video thường; TikTok và Douyin Beta chỉ nhận bài đăng có luồng video, tự động loại ảnh và slideshow.
-- Xem metadata, lọc video ngắn/dài, phát hiện trùng, chọn video rồi mới tải; tải xong không tự khởi chạy pipeline.
-- Tự nhận diện ngôn ngữ nguồn cho từng câu phụ đề, phù hợp cả video xen nhiều ngôn ngữ.
-- Dịch sang các ngôn ngữ đích phổ biến bằng Tencent HY-MT2 local với ngữ cảnh subtitle lân cận.
-- Chọn giọng Edge TTS phù hợp với ngôn ngữ đích.
-- Chọn `Full auto` hoặc `Review then dub`.
-- Sửa từng câu dịch trước khi TTS và render.
-- Tạo subtitle ngắn, tuần tự, phù hợp cách đọc YouTube Shorts/TikTok.
-- Chỉnh vị trí và kích thước khung subtitle bằng preview QML riêng.
-- Giữ hoặc giảm âm thanh gốc; có tùy chọn Demucs cho video có nhạc nền/tạp âm.
-- Pause, mở lại project cũ, Resume hoặc Restart.
-- Tái sử dụng checkpoint để không xử lý lại những bước không bị ảnh hưởng.
-- Pipeline Batch chạy tuần tự để ổn định VRAM; hàng đợi tải kênh hoạt động độc lập nên không khóa giao diện hoặc model queue.
+- **Free by design.** Local transcription, translation, media processing, checkpoints, and rendering do not require a paid HaizFlow API.
+- **Local-first privacy.** There is no HaizFlow cloud backend, account system, or cloud database. Project data is stored in a user-selected local directory.
+- **Production-oriented workflow.** Projects own their input media, thumbnails, logs, subtitle settings, checkpoints, intermediate files, and exports.
+- **Human control where it matters.** Run in Full Auto mode or stop after translation to edit every line before TTS and rendering.
+- **Hardware-aware execution.** The app supports GPU and CPU processing modes, validates runtime availability, and keeps queued work independent from UI navigation.
+- **Modern desktop experience.** PySide6, QML, Qt Quick Controls, and Qt Multimedia provide a native Windows desktop interface rather than a browser shell.
 
-## Pipeline
+### Core Capabilities
+
+| Area | Capability |
+| --- | --- |
+| Project management | Separate single and batch workspaces, local project manifests, thumbnails, restart, resume, deletion, and folder access. |
+| Media import | Local MP4/MOV/MKV files, drag and drop, folders for batch processing, individual supported video links, and channel discovery. |
+| Channel import | YouTube, TikTok, and Douyin Beta channel scanning with ordering, duration filtering, duplicate detection, candidate selection, and independent downloads. |
+| Transcription | WhisperX transcription, alignment, timed subtitle segments, and mixed-language detection at segment level. |
+| Translation | Local Tencent HY-MT2 translation with a pinned model revision, bounded context windows, and optional translation review before dubbing. |
+| Voice synthesis | Edge TTS voices filtered by target language, bounded concurrency, retries, and explicit per-line progress logging. |
+| Audio | Keep original audio at an adjustable level or optionally separate vocals/background audio with Demucs. |
+| Captions | Timed, short-form subtitle rendering and a dedicated QML subtitle-frame editor for placement and scaling. |
+| Rendering | FFmpeg-based audio timeline construction, subtitle burn-in, output rendering, hardware encoder probing, and safe CPU fallback. |
+| Reliability | Per-project checkpoints, pause/resume semantics, isolated model workers, model queueing, cancellation, and structured diagnostics. |
+
+### Product Workflow
 
 ```text
-Video nguồn
-  -> tách audio bằng FFmpeg
-  -> tách giọng tùy chọn bằng Demucs
-  -> nhận dạng, alignment và nhận diện ngôn ngữ theo từng câu phụ đề bằng WhisperX
-  -> dịch bằng HY-MT2 local
-  -> duyệt/sửa bản dịch tùy chọn
-  -> tạo các đoạn voice bằng Edge TTS
-  -> ghép timeline audio
-  -> render video và subtitle bằng FFmpeg
+Create project
+  -> import a source video or batch media
+  -> choose target language, voice, audio mode, and subtitle frame
+  -> extract audio with FFmpeg
+  -> transcribe and align with WhisperX
+  -> translate locally with HY-MT2
+  -> optional human translation review
+  -> synthesize voices with Edge TTS
+  -> build an audio timeline and preserve/mix source audio
+  -> render timed subtitles and final video with FFmpeg
+  -> open the export from the project
 ```
 
-Trên máy có CUDA, WhisperX và HY-MT2 được warm-up tuần tự ở nền khi app mở. Trên máy chỉ có CPU, app tự chọn batch và số luồng theo RAM, chỉ warm-up WhisperX khi đủ bộ nhớ, rồi tải HY-MT2 Q4 lúc bắt đầu dịch. Model dịch CPU được tự động giải phóng sau thời gian không hoạt động để tránh chiếm RAM lâu dài.
+Channel imports deliberately stop before processing. Selected videos are added to a batch project first, so the user can inspect shared settings, subtitle presets, and individual overrides before starting the queue.
 
-## Công nghệ
+### Architecture
 
-| Thành phần | Công nghệ |
+```text
+PySide6 / QML desktop UI
+        |
+        +-- Project controller and local project store
+        |       +-- project manifests, media metadata, logs, checkpoints
+        |
+        +-- Processing queue
+        |       +-- one controlled media pipeline at a time per compute runtime
+        |       +-- independent channel-download coordinator
+        |
+        +-- Isolated AI workers
+        |       +-- WhisperX / Pyannote transcription and alignment
+        |       +-- Tencent HY-MT2 translation
+        |
+        +-- Media services
+                +-- FFmpeg / FFprobe
+                +-- Edge TTS
+                +-- optional Demucs separation
+                +-- yt-dlp and Douyin helper integration
+```
+
+The UI remains usable while a video is processing. A newly submitted project is queued instead of competing for the same models or GPU memory. Channel scanning and downloads are coordinated separately from the model-processing queue.
+
+### Technology Stack
+
+| Layer | Technology |
 | --- | --- |
-| Desktop UI | PySide6, QML, Qt Quick Controls, Qt Multimedia |
-| Nhận dạng giọng nói | WhisperX |
-| Dịch | Tencent HY-MT2-1.8B trong local worker riêng |
-| Lồng tiếng | Edge TTS |
-| Xử lý media | FFmpeg, yt-dlp, Pydub, Demucs tùy chọn |
-| Data contract | Pydantic |
-| Đóng gói | PyInstaller `--onedir` |
+| Desktop UI | Python, PySide6, QML, Qt Quick Controls, Qt Multimedia |
+| Speech recognition | WhisperX, faster-whisper, Pyannote Audio |
+| Translation | Tencent HY-MT2-1.8B, Transformers, llama.cpp CPU Q4 runtime |
+| Speech synthesis | Edge TTS |
+| Video and audio | FFmpeg, FFprobe, Pydub, optional Demucs |
+| Import and extraction | yt-dlp, isolated Douyin helper |
+| Data contracts | Pydantic, JSON project manifests |
+| Packaging | PyInstaller `--onedir` for Windows |
+| Quality controls | Hashed Windows dependency lock, runtime validation, smoke checks, unit tests |
 
-Runtime desktop không cần Node.js, React, Vite, FastAPI, trình duyệt hay database cloud.
+### Hardware and Runtime Strategy
 
-## Yêu cầu
+HaizFlow ships one source architecture for both GPU and CPU execution.
 
-- Windows 10 hoặc Windows 11.
-- Source package hỗ trợ Python 3.11-3.13. Môi trường phát triển/build tái lập hiện được chuẩn hóa trên Windows x64 + Python 3.13 bằng lock có hash.
-- NVIDIA CUDA được khuyến nghị để có tốc độ tốt nhất. Máy không có card đồ họa rời vẫn chạy được bằng WhisperX INT8 và HY-MT2 Q4 trên CPU; thời gian xử lý sẽ dài hơn.
-- Có FFmpeg và FFprobe trong `runtime/bin` khi chạy source.
-- Có Internet để nhập video từ liên kết, để Edge TTS tạo giọng và để tải model từ Hugging Face ở lần đầu.
+- **GPU mode:** recommended for NVIDIA CUDA devices with enough available VRAM. WhisperX and HY-MT2 are warmed in a controlled order to reduce first-job delay and avoid peak-memory collisions.
+- **CPU mode:** uses WhisperX INT8 and HY-MT2 Q4. It is slower but keeps the product usable on computers without a discrete GPU.
+- **Runtime safety:** the app exposes the active processing device, validates a requested CPU/GPU change, and keeps the active job stable when the user changes a preference. A genuine GPU loss can trigger controlled recovery rather than leaving a project in an ambiguous state.
+- **Storage safety:** model cache, Torch cache, Hugging Face cache, uv/pip cache, temporary files, logs, and project data are configured through `RUNTIME_DATA_DIR` and related paths. The current local development setup keeps them on `D:\HaizFlowData`.
 
-## Cài đặt và chạy từ source
+### Privacy, Cost, and Network Use
+
+HaizFlow itself is free and does not run a paid processing backend. The transcription, translation, media composition, captions, checkpoints, and final rendering pipeline execute locally.
+
+Some optional capabilities require an internet connection:
+
+- Edge TTS sends translated text to Microsoft's speech service to generate audio. It does not require a paid HaizFlow API key.
+- Link and channel import use the public platform extraction workflow through yt-dlp or the Douyin helper.
+- First model download obtains model artifacts from their upstream distribution source.
+
+Users are responsible for respecting copyright, platform terms, privacy obligations, and local law when importing or publishing media.
+
+### Repository Layout
+
+```text
+HaizFlow/
+  HaizFlow/
+    src/haizflow/          Application package
+    docs/                  Architecture and release-readiness notes
+    scripts/               Environment, validation, packaging, and maintenance tools
+    test/                  Automated tests
+    runtime/               Bundled runtime manifest and media binaries when provided
+    pyproject.toml         Python package metadata
+    requirements-lock-...  Reproducible Windows dependency lock
+```
+
+### Quick Start: Source Mode
 
 ```powershell
-git clone <repository-url>
-cd auto-dub-video-local
+git clone https://github.com/MachHongHai/HaizFlow.git
+cd HaizFlow\HaizFlow
 Copy-Item .env.example .env
-.\scripts\install-desktop-env.ps1
-.\scripts\run-desktop.ps1
 ```
 
-Một môi trường duy nhất hỗ trợ cả GPU và CPU. Chế độ xử lý được chọn trong **Settings > Processing device**:
-
-- **GPU:** yêu cầu GPU NVIDIA CUDA với tối thiểu 7 GB VRAM và khoảng 5 GB VRAM đang trống. App dùng BF16 khi GPU hỗ trợ, nếu không sẽ tự chuyển HY-MT2 sang FP16.
-- **CPU:** dùng WhisperX INT8 và HY-MT2 Q4; yêu cầu khoảng 6 GB RAM trở lên.
-
-```powershell
-.\scripts\install-desktop-env.ps1
-.\scripts\run-desktop.ps1
-```
-
-Hoặc chạy trực tiếp sau khi đã tạo virtual environment:
-
-```powershell
-.\.venv\Scripts\python.exe .\autodub_desktop.py
-```
-
-Kiểm tra toàn bộ runtime trước khi debug hoặc build:
-
-```powershell
-.\.venv\Scripts\python.exe .\scripts\verify-runtime.py
-```
-
-Script phát hiện sai Python environment, thiếu package, sai version, lỗi Qt/Torch/CUDA/llama.cpp/CTranslate2, sai đường dẫn cache, thiếu FFmpeg, thiếu dung lượng đĩa và dependency conflict. Các backend native được thử trong process con nên lỗi DLL, AVX hoặc driver không làm sập giao diện chính. `build-exe.ps1` tự chạy bản kiểm tra nghiêm ngặt hơn trước khi gọi PyInstaller.
-
-App mở ở trạng thái maximized. Warm-up WhisperX và HY-MT2 chạy nền nên giao diện vẫn dùng được khi model đang load.
-
-## Cấu hình
-
-Tạo `.env` từ `.env.example`, sau đó chỉ sửa các biến cần thiết:
+Set a local data location before downloading models or importing large media:
 
 ```env
-# Nên đặt ổ D nếu không muốn cache/job chiếm ổ C.
-RUNTIME_DATA_DIR=D:\AutoDubData
-
-# tiny, base, small, medium hoặc large-v3.
-WHISPER_MODEL=small
-
-# Model dịch local, tải từ Hugging Face ở lần đầu.
-HYMT2_MODEL=tencent/Hy-MT2-1.8B
-
-# Số request Edge TTS song song; giá trị hợp lệ 1 đến 4.
-TTS_MAX_CONCURRENCY=1
+RUNTIME_DATA_DIR=D:\HaizFlowData
+HF_HOME=D:\HaizFlowData\cache\huggingface
+TORCH_HOME=D:\HaizFlowData\cache\torch
+PIP_CACHE_DIR=D:\HaizFlowData\cache\pip
+UV_CACHE_DIR=D:\HaizFlowData\cache\uv
+HAIZFLOW_TMP_DIR=D:\HaizFlowData\cache\tmp
 ```
 
-Nhánh CPU dùng model chính thức `Hy-MT2-1.8B-Q4_K_M.gguf`. Model được tải một lần vào `<RUNTIME_DATA_DIR>\models\hymt2-gguf`, hoặc có thể được đóng gói sẵn trong bản phát hành offline.
-
-`RUNTIME_DATA_DIR` là biến quan trọng nhất. Nếu không đặt, runtime data sẽ vào `%LOCALAPPDATA%\AutoDubVideoLocal\data`. Đặt `D:\AutoDubData` trước khi import media lớn để cache model, chỉ mục project và toàn bộ workspace của project ở ổ D.
-
-Có thể đặt `HF_HOME` và `TORCH_HOME` thành đường dẫn tuyệt đối nếu muốn tách Hugging Face/Torch cache khỏi runtime root.
-
-## Workflow
-
-### Full Auto
-
-Chạy xuyên suốt: nhận dạng, dịch, tạo phụ đề, TTS, ghép audio và render mà không cần dừng.
-
-### Review Then Dub
-
-Sau khi HY-MT2 dịch xong, project chuyển sang trạng thái `awaiting_review`. Mở **Review translation**, chỉnh từng segment trong modal, sau đó bấm **Approve and continue**. Tool tiếp tục subtitle, TTS, ghép audio và render mà không gọi lại WhisperX hoặc HY-MT2.
-
-## Dự án, Pause, Resume và Restart
-
-Project đơn lẻ sở hữu một video; project hàng loạt sở hữu nhiều video với thiết lập chung và tùy chỉnh riêng cho từng video. Hai loại project có thư viện riêng và đều được hiển thị bằng thumbnail. Khi mở lại, giao diện khôi phục video nguồn, thiết lập lồng tiếng, log, tiến độ và các thao tác video xuất.
-
-- **Pause:** dừng subprocess đang chạy và lưu safe checkpoint.
-- **Resume:** nếu bản dịch đã hoàn chỉnh, tiếp tục từ subtitle/TTS/render; các bước dở dang phía trước sẽ chạy lại an toàn.
-- **Restart:** lưu Dubbing setup hiện tại rồi chạy lại project.
-- **Replace:** thay video input đã lưu trong project, cập nhật thumbnail; sau đó dùng Restart để xử lý video mới.
-
-## Checkpoint Cache và tốc độ
-
-Tool lưu chữ ký checkpoint vào `job.json` và chỉ tái sử dụng output khi setup phù hợp và file còn tồn tại.
-
-| Thay đổi | Bước được tái sử dụng | Bước chạy lại |
-| --- | --- | --- |
-| Không đổi source/ngôn ngữ | Translation, subtitle, voice, mix, render nếu checkpoint hợp lệ | Không có hoặc chỉ output thiếu |
-| Đổi voice | Translation và subtitle | TTS, mix, render |
-| Đổi âm lượng gốc | Translation, subtitle, voice | Mix và render |
-| Đổi subtitle style | Translation, voice, audio mix | Subtitle và render |
-| Đổi video, ngôn ngữ đích hoặc Demucs | Không dùng cache upstream | Chạy từ bước bị ảnh hưởng |
-
-Điều này làm việc thử nhiều giọng hoặc subtitle style nhanh hơn rõ rệt so với chạy lại toàn bộ video.
-
-## Lưu trữ runtime offline
-
-Ví dụ với `RUNTIME_DATA_DIR=D:\AutoDubData`:
-
-```text
-D:\AutoDubData\
-  projects\<project-name>--<project-uuid>\
-    .autodub-project.json
-    exports\
-      dubbed_video.mp4
-    videos\<video-id>\
-      input\video.<ext>
-      temp\audio.wav
-      temp\source_segments.json
-      temp\vi_segments.json
-      temp\voice_parts\
-      output\final.mp4
-      logs.txt
-      job.json
-  cache\huggingface\
-  cache\torch\
-  logs\
-  desktop-settings.json
-```
-
-Mỗi project tự chứa input, temp, log, metadata và video export. App sẽ tự chuyển workspace `jobs` của phiên bản cũ vào project khi khởi động. Có thể migrate dữ liệu cũ bằng:
+Install and run:
 
 ```powershell
-.\scripts\migrate-runtime-data.ps1 -Move
-```
-
-Hãy đọc output script trước khi dùng `-Move`.
-
-## Log và theo dõi tiến trình
-
-Log của từng video trong project nằm tại:
-
-```text
-<project>\videos\<video-id>\logs.txt
-```
-
-Activity Log trong app hiển thị realtime log của project đang chọn. Text progress và log dùng cùng callback ở translation/TTS, nên dòng như `Translating segment 2 of 3` tương ứng trực tiếp với trạng thái trên progress bar.
-
-App log nằm tại:
-
-```text
-<RUNTIME_DATA_DIR>\logs\
-```
-
-## Phát triển và build EXE
-
-Khi sửa code, test bằng source runtime:
-
-```powershell
+.\scripts\install-desktop-env.ps1
 .\scripts\run-desktop.ps1
 ```
 
-Không cài package trực tiếp vào Python hệ thống. Dependency trực tiếp nằm trong `pyproject.toml`; toàn bộ 137 dependency trực tiếp/gián tiếp của bản Windows được khóa kèm SHA-256 trong `requirements-lock-py313-win64.txt`. Script cài đặt dùng `--require-hashes` và từ chối lock không đồng bộ. Khi cần tạo lại một environment sạch:
+For an existing virtual environment after moving the repository:
 
 ```powershell
-.\scripts\install-desktop-env.ps1 -Recreate
+.\.venv\Scripts\python.exe -m pip install --no-deps --no-build-isolation -e .
 ```
 
-Chạy kiểm tra chuẩn trước khi merge:
+### Verification and Development
 
 ```powershell
+# Run the complete unit-test suite.
 .\scripts\test.ps1
+
+# Validate packages, hardware/runtime assumptions, FFmpeg, cache paths, and lock consistency.
 .\.venv\Scripts\python.exe .\scripts\verify-runtime.py
+
+# Validate the lock file without changing installed packages.
+.\.venv\Scripts\python.exe .\scripts\verify-dependency-lock.py
 ```
 
-Chỉ build EXE khi cần phát hành:
+The repository currently includes automated coverage for project lifecycle behavior, batch import, channel import, queue isolation, CPU/GPU runtime behavior, checkpoint/restart semantics, timeline rendering, TTS reliability, localization, and runtime probing.
+
+### Packaging for Windows
 
 ```powershell
 .\scripts\build-exe.ps1
 ```
 
-Một bản phát hành duy nhất chứa cả backend GPU và CPU:
+The application uses PyInstaller `--onedir` packaging because Qt, Torch, WhisperX, FFmpeg, and native DLL dependencies need to stay adjacent to the executable. Build only when preparing a release; day-to-day development should run from source to preserve fast iteration.
 
-```powershell
-.\scripts\build-exe.ps1
+### Documentation
 
-# Tùy chọn: nhúng sẵn model Q4 để CPU không phải tải ở lần đầu
-.\.venv\Scripts\python.exe .\scripts\prepare-cpu-model.py
-.\scripts\build-exe.ps1 -IncludeCpuModel
+- [Architecture](HaizFlow/docs/architecture.md)
+- [Release readiness](HaizFlow/docs/release-readiness.md)
+- [Environment template](HaizFlow/.env.example)
+- [Package metadata](HaizFlow/pyproject.toml)
+- [Dependency lock](HaizFlow/requirements-lock-py313-win64.txt)
 
-# Tùy chọn: nhúng cả model Transformers để GPU cũng hoạt động hoàn toàn offline
-.\.venv\Scripts\python.exe .\scripts\prepare-gpu-model.py
-.\scripts\build-exe.ps1 -IncludeCpuModel -IncludeGpuModel
-```
+### License and Notices
 
-Bản thống nhất lớn hơn bản CPU chuyên biệt vì chứa cả Torch CUDA và `llama.cpp`, nhưng người dùng chỉ cần cài một lần và có thể đổi thiết bị xử lý trong Settings.
+HaizFlow source is released under the repository license. Third-party software, model, FFmpeg, and channel-import notices are available in [`HaizFlow/licenses`](HaizFlow/licenses).
 
-Kết quả:
+---
+
+<a id="tieng-viet"></a>
+
+## Tiếng Việt
+
+### Tổng quan
+
+HaizFlow là ứng dụng desktop Windows giúp chuyển video nguồn thành video đã dịch, lồng tiếng và gắn phụ đề theo một quy trình xử lý cục bộ, có quản lý dự án rõ ràng. Dự án hướng tới creator và nhóm sản xuất nhỏ muốn tự động hóa công việc nhưng vẫn kiểm soát dữ liệu, chất lượng bản dịch và đầu ra video.
+
+Ứng dụng tách riêng không gian làm việc **Đơn lẻ** và **Hàng loạt**, lưu toàn bộ media, log, checkpoint, phụ đề và video xuất trong dự án cục bộ. Người dùng có thể tạm dừng, tiếp tục, chạy lại, duyệt bản dịch hoặc thay video nguồn mà không mất quyền kiểm soát workflow.
+
+### Giá trị cốt lõi
+
+- **Miễn phí 100%.** Pipeline chính không cần API trả phí, subscription hay tính phí theo số phút video.
+- **Local-first.** HaizFlow không có backend cloud, tài khoản người dùng hoặc cơ sở dữ liệu cloud của sản phẩm. Dữ liệu dự án được lưu tại đường dẫn do người dùng chọn.
+- **Thiết kế theo dự án.** Mỗi dự án tự sở hữu input, thumbnail, log, checkpoint, thiết lập phụ đề, file tạm và video xuất.
+- **Tự động hóa nhưng vẫn có quyền duyệt.** Có thể chạy Full Auto hoặc dừng sau dịch để sửa từng câu trước khi tạo giọng nói.
+- **Phù hợp nhiều cấu hình máy.** Hỗ trợ GPU NVIDIA CUDA và CPU; có kiểm tra runtime trước khi chạy để giảm lỗi môi trường.
+- **Giao diện desktop hiện đại.** Xây dựng bằng PySide6 và QML thay vì bọc một trang web trong cửa sổ ứng dụng.
+
+### Tính năng chính
+
+| Nhóm | Khả năng |
+| --- | --- |
+| Quản lý dự án | Tách dự án đơn lẻ/hàng loạt, manifest cục bộ, thumbnail, mở lại, tiếp tục, chạy lại, xóa và mở thư mục dự án. |
+| Nhập video | Nhập MP4/MOV/MKV, kéo thả, chọn thư mục cho batch, nhập liên kết video và tải video từ kênh hỗ trợ. |
+| Tải từ kênh | Quét YouTube, TikTok và Douyin Beta; sắp xếp, lọc thời lượng, phát hiện trùng, chọn video rồi mới tải. |
+| Nhận dạng | WhisperX tạo transcript, căn chỉnh thời gian, segment phụ đề và nhận diện ngôn ngữ theo từng segment. |
+| Dịch thuật | Tencent HY-MT2 chạy local, khóa revision model, dùng context có giới hạn và hỗ trợ duyệt bản dịch trước khi lồng tiếng. |
+| Lồng tiếng | Edge TTS lọc giọng theo ngôn ngữ đích, giới hạn song song, retry có kiểm soát và log theo từng câu. |
+| Âm thanh | Giữ âm gốc với mức âm lượng tùy chỉnh hoặc tách giọng/nền bằng Demucs khi cần. |
+| Phụ đề | Render subtitle theo thời gian; có cửa sổ QML riêng để chỉnh vị trí và kích thước khung phụ đề. |
+| Render | FFmpeg tạo audio timeline, gắn phụ đề, render video đầu ra, dò encoder phần cứng và fallback CPU an toàn. |
+| Độ tin cậy | Checkpoint theo dự án, pause/resume, worker model cô lập, hàng đợi, hủy và chẩn đoán lỗi có cấu trúc. |
+
+### Quy trình xử lý
 
 ```text
-dist\AutoDubVideoLocal\AutoDubVideoLocal.exe
+Tạo dự án
+  -> nhập video hoặc nhiều video
+  -> chọn ngôn ngữ đích, giọng đọc, chế độ âm thanh, khung phụ đề
+  -> FFmpeg tách audio
+  -> WhisperX nhận dạng và căn chỉnh
+  -> HY-MT2 dịch local
+  -> tùy chọn duyệt/sửa bản dịch
+  -> Edge TTS tạo voice
+  -> ghép timeline audio với âm thanh nguồn
+  -> FFmpeg render video và phụ đề
+  -> mở video xuất trực tiếp từ dự án
 ```
 
-Build dùng `--onedir` vì Qt, Torch, WhisperX và FFmpeg cần nhiều native files kề nhau. Không di chuyển riêng file `.exe` ra khỏi thư mục distribution.
+Video được tải từ kênh chỉ được thêm vào project hàng loạt. Pipeline không tự chạy ngay để người dùng có thời gian kiểm tra thiết lập chung, preset phụ đề và tùy chỉnh riêng cho từng video.
 
-## Hiệu năng và giới hạn
+### Kiến trúc và điểm nhấn kỹ thuật
 
-- CUDA warm-up WhisperX và HY-MT2 tuần tự khi app mở. CPU dùng INT8/Q4, batch thích ứng theo RAM và tự nhả worker dịch khi không hoạt động.
-- FFmpeg tự probe NVENC, Intel Quick Sync và AMD AMF; nếu encoder phần cứng không dùng được, app tự thử lại bằng `libx264 veryfast`.
-- Edge TTS mặc định gửi tuần tự một request để tránh lỗi `NoAudioReceived` do nhiều WebSocket đồng thời. Các câu lỗi vẫn được retry bằng kết nối mới và chỉ được ghi nhận khi MP3 hợp lệ; tool không âm thầm thay câu lỗi bằng khoảng lặng. Có thể tăng `TTS_MAX_CONCURRENCY`, nhưng độ ổn định sẽ giảm.
-- Demucs tắt mặc định vì nặng; chỉ bật nếu nhạc nền/tạp âm làm giảm chất lượng nhận dạng.
-- Batch chạy tuần tự để tránh cạnh tranh VRAM.
-- TTS cần Internet; tốc độ cuối cùng còn phụ thuộc kết nối mạng và độ dài câu.
-- Chất lượng đầu ra phụ thuộc transcript nguồn, cặp ngôn ngữ và model dịch local.
+HaizFlow dùng kiến trúc desktop tách rõ giao diện, dữ liệu dự án, hàng đợi xử lý, worker AI và dịch vụ media. Giao diện vẫn thao tác được trong khi một video đang chạy; video mới được đưa vào hàng đợi thay vì tranh chấp VRAM hoặc model với tiến trình hiện tại. Hàng đợi quét/tải kênh hoạt động độc lập với hàng đợi dùng model AI.
 
-## Tài liệu bổ sung
+Các thành phần chính gồm:
 
-- [Architecture (English)](auto-dub-video-local/docs/architecture.md)
-- [Package metadata](auto-dub-video-local/pyproject.toml)
-- [Hashed Windows dependency lock](auto-dub-video-local/requirements-lock-py313-win64.txt)
-- [Release readiness](auto-dub-video-local/docs/release-readiness.md)
-- [Environment template](auto-dub-video-local/.env.example)
-- [Development requirements](auto-dub-video-local/requirements.txt)
+- **PySide6/QML:** giao diện native Windows, điều hướng project, popup, preview và trạng thái tiến trình.
+- **WhisperX/Pyannote:** nhận dạng lời nói, căn chỉnh timestamp và nhận diện đa ngôn ngữ theo segment.
+- **Tencent HY-MT2:** dịch subtitle local trong worker riêng, có giới hạn context để vừa giữ ngữ cảnh vừa an toàn với video dài.
+- **Edge TTS:** sinh audio theo câu, có retry và logging để dễ truy vết lỗi.
+- **FFmpeg/Demucs:** xử lý audio/video, subtitle burn-in, mix âm thanh nguồn và render đầu ra.
+- **Manifest JSON/Pydantic:** lưu cấu trúc dự án, checkpoint và contract dữ liệu rõ ràng để có thể tiếp tục mở rộng.
+
+### CPU, GPU và lưu trữ
+
+- **GPU:** khuyến nghị cho máy có NVIDIA CUDA và VRAM khả dụng đủ lớn. Model được warm-up theo thứ tự để tránh đỉnh VRAM ở lần chạy đầu.
+- **CPU:** dùng WhisperX INT8 và HY-MT2 Q4. Chậm hơn nhưng vẫn hoạt động trên máy không có card rời.
+- **An toàn runtime:** app kiểm tra thiết bị hiện tại, không làm gián đoạn job đang chạy chỉ vì người dùng đổi preference, và có hướng xử lý khi GPU thực sự mất khả dụng.
+- **Dữ liệu trên ổ người dùng chọn:** `RUNTIME_DATA_DIR`, Hugging Face cache, Torch cache, pip/uv cache và file tạm đều có thể cấu hình. Thiết lập hiện tại dùng `D:\HaizFlowData` để không chiếm ổ C.
+
+### Quyền riêng tư và chi phí
+
+HaizFlow không vận hành backend xử lý trả phí. Nhận dạng, dịch, ghép media, tạo phụ đề, checkpoint và render cuối đều chạy trên máy cục bộ.
+
+Một số bước cần Internet nhưng không phải dịch vụ API trả phí của HaizFlow:
+
+- Edge TTS gửi nội dung văn bản đã dịch tới dịch vụ speech của Microsoft để tạo audio.
+- Nhập video/link/kênh dùng cơ chế trích xuất nền tảng qua yt-dlp hoặc helper Douyin.
+- Lần đầu chạy cần Internet để tải model từ nguồn phát hành chính thức.
+
+Người dùng chịu trách nhiệm tuân thủ bản quyền, điều khoản nền tảng, quyền riêng tư và pháp luật địa phương khi nhập hoặc xuất bản video.
+
+### Cài đặt và chạy từ source
+
+```powershell
+git clone https://github.com/MachHongHai/HaizFlow.git
+cd HaizFlow\HaizFlow
+Copy-Item .env.example .env
+```
+
+Chọn vị trí lưu dữ liệu trước khi tải model hoặc xử lý media lớn:
+
+```env
+RUNTIME_DATA_DIR=D:\HaizFlowData
+HF_HOME=D:\HaizFlowData\cache\huggingface
+TORCH_HOME=D:\HaizFlowData\cache\torch
+PIP_CACHE_DIR=D:\HaizFlowData\cache\pip
+UV_CACHE_DIR=D:\HaizFlowData\cache\uv
+HAIZFLOW_TMP_DIR=D:\HaizFlowData\cache\tmp
+```
+
+```powershell
+.\scripts\install-desktop-env.ps1
+.\scripts\run-desktop.ps1
+```
+
+Nếu vừa đổi vị trí repository, cập nhật editable package một lần:
+
+```powershell
+.\.venv\Scripts\python.exe -m pip install --no-deps --no-build-isolation -e .
+```
+
+### Kiểm thử, đóng gói và tài liệu kỹ thuật
+
+```powershell
+# Chạy toàn bộ unit test.
+.\scripts\test.ps1
+
+# Kiểm tra runtime, FFmpeg, cache path, dependency lock và môi trường.
+.\.venv\Scripts\python.exe .\scripts\verify-runtime.py
+
+# Đóng gói bản Windows khi chuẩn bị phát hành.
+.\scripts\build-exe.ps1
+```
+
+Repository có kiểm thử cho vòng đời project, batch import, channel import, hàng đợi, CPU/GPU runtime, checkpoint/restart, render timeline, độ tin cậy TTS, localization và runtime probing.
+
+Tài liệu kỹ thuật bổ sung:
+
+- [Architecture](HaizFlow/docs/architecture.md)
+- [Release readiness](HaizFlow/docs/release-readiness.md)
+- [Environment template](HaizFlow/.env.example)
+- [Package metadata](HaizFlow/pyproject.toml)
+- [Dependency lock](HaizFlow/requirements-lock-py313-win64.txt)
+
+### Giấy phép
+
+Mã nguồn HaizFlow tuân theo giấy phép của repository. Thông báo về phần mềm, model, FFmpeg và channel-import bên thứ ba nằm tại [`HaizFlow/licenses`](HaizFlow/licenses).

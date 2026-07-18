@@ -1,14 +1,11 @@
-.cache/
-storage/
-
-# Auto Dub local runtime. The Git root is one level above this project.
-auto-dub-video-local/.venv/
-auto-dub-video-local/data/
-auto-dub-video-local/storage/
-auto-dub-video-local/.cache/
-auto-dub-video-local/runtime/bin/
-auto-dub-video-local/dist/
-auto-dub-video-local/build/
-auto-dub-video-local/out/
-auto-dub-video-local/__pycache__/
-auto-dub-video-local/**/*.pyc
+# HaizFlow runtime and build artifacts. The Git root is one level above the app.
+HaizFlow/.venv/
+HaizFlow/data/
+HaizFlow/storage/
+HaizFlow/.cache/
+HaizFlow/runtime/bin/
+HaizFlow/dist/
+HaizFlow/build/
+HaizFlow/out/
+HaizFlow/__pycache__/
+HaizFlow/**/*.pyc
