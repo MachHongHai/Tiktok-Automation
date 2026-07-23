@@ -161,6 +161,7 @@ Window {
                         if (AppController.commitPreviewEdits()) {
                             root.editHandled = true
                             root.editsSaved = true
+                            root.close()
                         }
                     }
                 }

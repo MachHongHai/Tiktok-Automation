@@ -81,15 +81,23 @@ ApplicationWindow {
         id: batchSettingsDialog
 
         onRequestEditAllSubtitles: {
+            batchSettingsDialog.preserveDraftForSubtitleEditor()
             close()
             previewWindow.returnToBatchSetup = true
-            AppController.openBatchSubtitleEditor()
+            if (!AppController.openBatchSubtitleEditor()) {
+                previewWindow.returnToBatchSetup = false
+                batchSettingsDialog.open()
+            }
         }
 
         onRequestEditSubtitleSize: function (sizeKey) {
+            batchSettingsDialog.preserveDraftForSubtitleEditor()
             close()
             previewWindow.returnToBatchSetup = true
-            AppController.openBatchSizeEditor(sizeKey)
+            if (!AppController.openBatchSizeEditor(sizeKey)) {
+                previewWindow.returnToBatchSetup = false
+                batchSettingsDialog.open()
+            }
         }
     }
 

@@ -1,19 +1,17 @@
 import os
 import json
-import shutil
 import queue
 import threading
 import time
-from collections import Counter
 from datetime import datetime, timezone
 
-from PySide6.QtCore import QEvent, QObject, Property, QTimer, QUrl, Signal, Slot
+from PySide6.QtCore import QEvent, QObject, Property, QTimer, Signal, Slot
 from PySide6.QtQml import QmlNamedElement, QmlSingleton
 
 from haizflow.desktop.activity_log import ActivityLogBuffer
 from haizflow.desktop.catalog import POPULAR_TARGET_LANGUAGES
 from haizflow.desktop.channel_import import ChannelImportCoordinator
-from haizflow.desktop.localization import QFileDialog, QMessageBox, _set_ui_language, _ui_text
+from haizflow.desktop.localization import QMessageBox, _set_ui_language, _ui_text
 from haizflow.desktop.media import (
     collect_batch_video_paths,
     create_video_thumbnail_path,
@@ -24,6 +22,14 @@ from haizflow.desktop.media import (
 )
 from haizflow.desktop.media_probe import VideoDimensionProbe
 from haizflow.desktop.models import VideoListModel, ProjectGridModel, ProjectListModel
+from haizflow.desktop.preview_media_controller import PreviewMediaController
+from haizflow.desktop.processing_lifecycle_controller import ProcessingLifecycleController
+from haizflow.desktop.project_workspace_controller import ProjectWorkspaceController
+from haizflow.desktop.project_commands_controller import ProjectCommandsController
+from haizflow.desktop.project_import_controller import ProjectImportController
+from haizflow.desktop.catalog_media_controller import CatalogMediaController
+from haizflow.desktop.runtime_device_controller import RuntimeDeviceController
+from haizflow.desktop.settings_controller import SettingsController
 from haizflow.desktop.presenters import (
     build_project_summaries,
     format_duration,
@@ -45,10 +51,9 @@ from haizflow.core.hardware import (
     validate_processing_device,
 )
 from haizflow.core.runtime_probe import probe_runtime
-from haizflow.pipeline.process_registry import cancel_video, pause_video
+from haizflow.pipeline.process_registry import pause_video
 from haizflow.schemas.video import CropSettings, VideoConfig, SubtitleStyle
 from haizflow.services import desktop_settings, video_store, project_store
-from haizflow.services.channel_import import normalize_remote_url
 from haizflow.services.desktop_videos import create_desktop_video, migrate_legacy_single_export
 from haizflow.services.processing_queue import SerialProcessingQueue
 from haizflow.services.translation import shutdown_hymt2_worker, warm_hymt2_worker
@@ -88,6 +93,7 @@ class HaizFlowController(QObject):
     projectPrepared = Signal()
     urlImportFinished = Signal()
     channelImportChanged = Signal()
+    mediaImportChanged = Signal()
 
     def __init__(self):
         super().__init__()
@@ -117,6 +123,9 @@ class HaizFlowController(QObject):
         self._shutdown_started = False
         self._close_confirmed = False
         self._warmup_thread: threading.Thread | None = None
+        self._startup_maintenance_thread: threading.Thread | None = None
+        self._startup_maintenance_events = queue.Queue()
+        self._processing_lifecycle = ProcessingLifecycleController(self)
         self._processing_queue = SerialProcessingQueue(
             self._execute_pipeline,
             on_started=self._on_queue_video_started,
@@ -147,6 +156,13 @@ class HaizFlowController(QObject):
         self._preview_group_keys = []
         self._preview_group_index = -1
         self._preview_original_style = None
+        self._preview_media = PreviewMediaController(self)
+        self._settings_controller = SettingsController(self)
+        self._project_workspace = ProjectWorkspaceController(self)
+        self._project_commands = ProjectCommandsController(self)
+        self._project_import = ProjectImportController(self)
+        self._catalog_media = CatalogMediaController(self)
+        self._runtime_device = RuntimeDeviceController(self)
         settings = desktop_settings.load_settings()
         self._settings_theme = settings["theme"]
         self._settings_language = settings["language"]
@@ -182,6 +198,11 @@ class HaizFlowController(QObject):
         self._project_name = ""
         self._project_type = "single"
         self._log_queue = queue.Queue()
+        self._media_import_events = queue.Queue()
+        self._media_import_busy = False
+        self._media_import_total = 0
+        self._media_import_completed = 0
+        self._media_import_status = ""
         self._thumbnail_refresh_running = False
         self._thumbnail_retry_failures: dict[str, tuple[str, int, float]] = {}
         self._thumbnail_retry_lock = threading.Lock()
@@ -199,17 +220,6 @@ class HaizFlowController(QObject):
         self._channel_importer.videoReady.connect(self._handle_channel_video_ready)
         self._channel_importer.downloadsFinished.connect(self._finish_channel_import_target)
 
-        migrated_video_data = video_store.migrate_legacy_project_data()
-        if migrated_video_data:
-            self._status_message = f"Organized {len(migrated_video_data)} video workspace(s) into their projects."
-        recovered_videos = video_store.recover_interrupted_videos()
-        if recovered_videos:
-            self._status_message = (
-                f"Recovered {len(recovered_videos)} interrupted video(s). "
-                "They are paused and ready to resume."
-            )
-        self._migrate_legacy_project_thumbnails()
-
         if os.getenv("HAIZFLOW_SMOKE_TEST") == "1":
             self._initial_model_warmup_done.set()
         else:
@@ -225,6 +235,14 @@ class HaizFlowController(QObject):
         self._log_timer.timeout.connect(self._drain_log_queue)
         self._log_timer.start(500)
 
+        self._media_import_timer = QTimer(self)
+        self._media_import_timer.timeout.connect(self._drain_media_import_events)
+        self._media_import_timer.start(100)
+
+        self._startup_maintenance_timer = QTimer(self)
+        self._startup_maintenance_timer.timeout.connect(self._drain_startup_maintenance_events)
+        self._startup_maintenance_timer.start(100)
+
         self._status_timer = QTimer(self)
         self._status_timer.timeout.connect(self.poll_videos)
         self._status_timer.start(1000)
@@ -235,6 +253,49 @@ class HaizFlowController(QObject):
 
         self.refreshVideos()
         self._last_video_metadata_revision = video_store.metadata_revision()
+        # Let Qt render the first frame before migrations touch large workspaces or invoke FFmpeg.
+        QTimer.singleShot(0, self._start_startup_maintenance)
+
+    def _drain_media_import_events(self) -> None:
+        self._project_import.drain_background_events()
+
+    def _start_startup_maintenance(self) -> None:
+        if self._shutdown_started or self._startup_maintenance_thread:
+            return
+        self._startup_maintenance_thread = threading.Thread(
+            target=self._run_startup_maintenance,
+            name="haizflow-startup-maintenance",
+            daemon=True,
+        )
+        self._startup_maintenance_thread.start()
+
+    def _run_startup_maintenance(self) -> None:
+        try:
+            migrated = video_store.migrate_legacy_project_data()
+            recovered = video_store.recover_interrupted_videos()
+            self._migrate_legacy_project_thumbnails()
+            self._startup_maintenance_events.put({"migrated": migrated, "recovered": recovered})
+        except Exception as exc:
+            self._startup_maintenance_events.put({"error": str(exc)})
+
+    def _drain_startup_maintenance_events(self) -> None:
+        try:
+            result = self._startup_maintenance_events.get_nowait()
+        except queue.Empty:
+            return
+        if result.get("error"):
+            self._status_message = f"Startup maintenance could not finish: {result['error']}"
+        else:
+            migrated = result.get("migrated") or []
+            recovered = result.get("recovered") or []
+            if recovered:
+                self._status_message = (
+                    f"Recovered {len(recovered)} interrupted video(s). They are paused and ready to resume."
+                )
+            elif migrated:
+                self._status_message = f"Organized {len(migrated)} video workspace(s) into their projects."
+            self.refreshVideos()
+        self.statusMessageChanged.emit()
 
     def eventFilter(self, watched, event):
         if event.type() == QEvent.Type.Close and not self._close_confirmed:
@@ -244,332 +305,41 @@ class HaizFlowController(QObject):
         return super().eventFilter(watched, event)
 
     def _confirm_application_close(self) -> bool:
-        background_work = (
-            self._processing_queue.has_work
-            or self._url_importer.busy
-            or self._channel_importer.busy
-        )
-        if not background_work:
-            self._close_confirmed = True
-            return True
-        answer = QMessageBox.question(
-            None,
-            "Exit HaizFlow",
-            "HaizFlow is still processing or downloading media.\n\n"
-            "Exit now? The active video will be paused, active downloads will be cancelled, "
-            "and queued videos will remain available for later.",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
-            QMessageBox.StandardButton.Cancel,
-        )
-        self._close_confirmed = answer == QMessageBox.StandardButton.Yes
-        return self._close_confirmed
+        return HaizFlowController._runtime_device_for(self)._confirm_application_close()
 
     def shutdown(self):
-        if self._shutdown_started:
-            return
-        self._shutdown_started = True
-        self._initial_model_warmup_done.set()
-        unsubscribe_log(self._on_video_log)
-
-        active_video_id = self._processing_queue.active_video_id
-        active_video = video_store.get_video(active_video_id) if active_video_id else None
-        if active_video and active_video.status in {"pending", "processing"}:
-            resume_step = active_video.resume_step or active_video.step or "processing"
-            if resume_step in {"pending", "queued", "paused"}:
-                resume_step = "starting"
-            pause_video(active_video_id)
-            video_store.update_video(
-                active_video_id,
-                status="paused",
-                error=None,
-                step="paused",
-                resume_step=resume_step,
-                step_detail=f"Paused during application exit ({resume_step})",
-                estimated_remaining_seconds=None,
-            )
-            video_store.log_to_video(
-                active_video_id,
-                "Application exit requested. Active subprocesses were stopped and the video was paused.",
-            )
-
-        for video_id in self._processing_queue.pending_ids():
-            queued_video = video_store.get_video(video_id)
-            if queued_video and queued_video.status == "pending":
-                video_store.update_video(
-                    video_id,
-                    step="queued",
-                    step_detail="Waiting to be started after the application exited",
-                )
-
-        self._url_importer.shutdown()
-        self._channel_importer.shutdown()
-        dimension_probe = getattr(self, "_dimension_probe", None)
-        if dimension_probe:
-            dimension_probe.shutdown()
-        queue_stopped = self._processing_queue.shutdown(timeout_seconds=10.0)
-        shutdown_hymt2_worker(permanent=True)
-        if not queue_stopped:
-            queue_stopped = self._processing_queue.shutdown(timeout_seconds=2.0)
-
-        warmup_thread = self._warmup_thread
-        if warmup_thread and warmup_thread.is_alive():
-            warmup_thread.join(timeout=1.0)
-        if queue_stopped and not (warmup_thread and warmup_thread.is_alive()):
-            from haizflow.pipeline.transcribe import release_warm_whisperx_model
-
-            release_warm_whisperx_model()
-        if HaizFlowController._qml_instance is self:
-            HaizFlowController._qml_instance = None
+        return HaizFlowController._runtime_device_for(self).shutdown()
 
     def _warm_models(self):
-        with self._model_runtime_lock:
-            self._warm_models_unlocked()
+        return HaizFlowController._runtime_device_for(self)._warm_models()
 
     def _warm_models_at_startup(self):
-        try:
-            requested_device = processing_device_preference()
-            probe = probe_runtime(requested_device)
-            if not probe.ok and requested_device == "gpu":
-                cpu_probe = probe_runtime("cpu")
-                if cpu_probe.ok:
-                    configure_processing_device("cpu")
-                    self._active_processing_device = "cpu"
-                    self._settings_processing_device = "cpu"
-                    self._processing_device_origin = "detected"
-                    try:
-                        desktop_settings.save_settings(
-                            {
-                                "theme": self._settings_theme,
-                                "language": self._settings_language,
-                                "processing_device": "cpu",
-                                "processing_device_origin": "detected",
-                            }
-                        )
-                    except OSError:
-                        pass
-                    self._status_message = f"GPU runtime unavailable; using CPU. {probe.message}"
-                    self.settingsChanged.emit()
-                    self.hardwareChanged.emit()
-                else:
-                    self._runtime_probe_error = (
-                        f"GPU runtime: {probe.message} CPU runtime: {cpu_probe.message}"
-                    )
-            elif not probe.ok:
-                self._runtime_probe_error = probe.message
-            if self._runtime_probe_error:
-                self._status_message = f"Model runtime unavailable: {self._runtime_probe_error}"
-                self.statusMessageChanged.emit()
-                return
-            self._warm_models()
-        finally:
-            self._initial_model_warmup_done.set()
+        return HaizFlowController._runtime_device_for(self)._warm_models_at_startup()
 
     def _warm_models_unlocked(self):
-        profile = runtime_profile()
-        try:
-            warmed = []
-            if profile.warm_hymt2_on_startup:
-                warm_hymt2_worker(self._set_warmup_status)
-                warmed.append("HY-MT2")
-            if profile.warm_whisper_on_startup:
-                from haizflow.pipeline.transcribe import warm_whisperx_model
-
-                warm_whisperx_model()
-                warmed.append("WhisperX")
-            self._status_message = (
-                f"{', '.join(warmed)} ready - {profile.summary}"
-                if warmed
-                else f"Ready - {profile.summary}"
-            )
-        except Exception as exc:
-            self._status_message = f"Model warm-up unavailable: {exc}"
-        self.statusMessageChanged.emit()
+        return HaizFlowController._runtime_device_for(self)._warm_models_unlocked()
 
     def _switch_processing_device(self, preference: str):
-        self._device_switching = True
-        self._status_message = "Switching processing device"
-        self.processingChanged.emit()
-        self.statusMessageChanged.emit()
-
-        def switch_models():
-            try:
-                from haizflow.pipeline.transcribe import release_warm_whisperx_model
-
-                probe = probe_runtime(preference)
-                if not probe.ok:
-                    active_device = self._active_processing_device
-                    self._settings_processing_device = active_device
-                    self._pending_processing_device = ""
-                    try:
-                        desktop_settings.save_settings(
-                            {
-                                "theme": self._settings_theme,
-                                "language": self._settings_language,
-                                "processing_device": active_device,
-                                "processing_device_origin": self._processing_device_origin,
-                            }
-                        )
-                    except OSError:
-                        pass
-                    self._status_message = f"Cannot switch to {preference.upper()}: {probe.message}"
-                    self.settingsChanged.emit()
-                    self.statusMessageChanged.emit()
-                    return
-                with self._model_runtime_lock:
-                    shutdown_hymt2_worker()
-                    release_warm_whisperx_model()
-                    configure_processing_device(preference)
-                    self._active_processing_device = preference
-                    self._runtime_probe_error = ""
-                    if self._pending_processing_device == preference:
-                        self._pending_processing_device = ""
-                    self._warm_models_unlocked()
-                self.settingsChanged.emit()
-                self.hardwareChanged.emit()
-            except Exception as exc:
-                self._status_message = f"Processing device switch failed: {exc}"
-                self.statusMessageChanged.emit()
-            finally:
-                self._device_switching = False
-                self.processingChanged.emit()
-
-        threading.Thread(target=switch_models, name="processing-device-switch", daemon=True).start()
+        return HaizFlowController._runtime_device_for(self)._switch_processing_device(preference)
 
     def _pipeline_is_active(self) -> bool:
-        """Return whether a video is currently inside the serial worker."""
-        return bool(self._processing_queue.active_video_id)
+        return HaizFlowController._runtime_device_for(self)._pipeline_is_active()
 
     def _activate_pending_device_for_next_video(self, video_id: str) -> None:
-        """Switch only between two queued videos, never during a pipeline."""
-        preference = self._pending_processing_device
-        if preference not in {"cpu", "gpu"}:
-            return
-
-        if preference == processing_device_preference():
-            self._pending_processing_device = ""
-            return
-
-        compatible, message = validate_processing_device(preference)
-        if not compatible:
-            preference = "cpu"
-            self._settings_processing_device = "cpu"
-            self._processing_device_origin = "detected"
-            try:
-                desktop_settings.save_settings(
-                    {
-                        "theme": self._settings_theme,
-                        "language": self._settings_language,
-                        "processing_device": "cpu",
-                        "processing_device_origin": "detected",
-                    }
-                )
-            except OSError:
-                pass
-            video_store.log_to_video(video_id, f"Requested GPU runtime is no longer safe: {message} Falling back to CPU.")
-
-        probe = probe_runtime(preference)
-        if not probe.ok and preference == "gpu":
-            video_store.log_to_video(video_id, f"GPU runtime validation failed: {probe.message} Falling back to CPU.")
-            preference = "cpu"
-            probe = probe_runtime("cpu")
-            self._settings_processing_device = "cpu"
-            self._processing_device_origin = "detected"
-            try:
-                desktop_settings.save_settings(
-                    {
-                        "theme": self._settings_theme,
-                        "language": self._settings_language,
-                        "processing_device": "cpu",
-                        "processing_device_origin": "detected",
-                    }
-                )
-            except OSError:
-                pass
-        if not probe.ok:
-            self._runtime_probe_error = probe.message
-            video_store.log_to_video(video_id, f"Processing runtime validation failed: {probe.message}")
-            return
-
-        try:
-            from haizflow.pipeline.transcribe import release_warm_whisperx_model
-
-            with self._model_runtime_lock:
-                if preference != processing_device_preference():
-                    shutdown_hymt2_worker()
-                    release_warm_whisperx_model()
-                    configure_processing_device(preference)
-            self._active_processing_device = preference
-            self._runtime_probe_error = ""
-            self._pending_processing_device = ""
-            video_store.log_to_video(video_id, f"Using the updated {preference.upper()} runtime for this video.")
-        except Exception as exc:
-            video_store.log_to_video(video_id, f"Could not apply the updated processing device: {exc}")
+        return HaizFlowController._runtime_device_for(self)._activate_pending_device_for_next_video(video_id)
 
     def _refresh_live_hardware(self):
-        """Keep Settings telemetry live without changing a pipeline mid-video."""
-        if not self._hardware_telemetry_active:
-            return
-        capabilities = detect_hardware_capabilities()
-        recommended_device = recommended_processing_device(capabilities)
-        # The pipeline can force a single video onto CPU after a GPU fault. Once
-        # the queue is idle, persist that runtime choice so Settings never
-        # claims that GPU is active while the app is actually using CPU.
-        runtime_fallback_device = processing_device_preference()
-        runtime_fallback_pending = (
-            not self._pending_processing_device
-            and runtime_fallback_device != self._settings_processing_device
-        )
-        should_fallback_to_cpu = self._settings_processing_device == "gpu" and recommended_device == "cpu"
-        should_follow_recommendation = (
-            self._processing_device_origin == "detected"
-            and recommended_device != self._settings_processing_device
-        )
-        runtime_needs_switch = runtime_fallback_pending or should_fallback_to_cpu or should_follow_recommendation
-        if capabilities != self._hardware_capabilities:
-            self._hardware_capabilities = capabilities
-            self.hardwareChanged.emit()
-        if self._pipeline_is_active():
-            return
-        if self._pending_processing_device:
-            if not self._device_switching:
-                self._switch_processing_device(self._pending_processing_device)
-            return
-        if not runtime_needs_switch or self._device_switching:
-            return
-        self._apply_detected_processing_device(
-            runtime_fallback_device if runtime_fallback_pending else recommended_device
-        )
+        return HaizFlowController._runtime_device_for(self)._refresh_live_hardware()
 
     @Slot(bool)
     def setHardwareTelemetryActive(self, active: bool):
-        """Only refresh dynamic telemetry while the Settings dialog needs it."""
-        self._hardware_telemetry_active = bool(active)
-        if self._hardware_telemetry_active:
-            self._refresh_live_hardware()
+        return HaizFlowController._runtime_device_for(self).setHardwareTelemetryActive(active)
 
     def _apply_detected_processing_device(self, device: str):
-        """Persist a safe device chosen from live hardware telemetry."""
-        if device not in {"cpu", "gpu"}:
-            device = "cpu"
-        self._settings_processing_device = device
-        self._processing_device_origin = "detected"
-        try:
-            desktop_settings.save_settings(
-                {
-                    "theme": self._settings_theme,
-                    "language": self._settings_language,
-                    "processing_device": device,
-                    "processing_device_origin": "detected",
-                }
-            )
-        except OSError:
-            pass
-        self.settingsChanged.emit()
-        self._switch_processing_device(device)
+        return HaizFlowController._runtime_device_for(self)._apply_detected_processing_device(device)
 
     def _set_warmup_status(self, detail: str):
-        self._status_message = detail
-        self.statusMessageChanged.emit()
+        return HaizFlowController._runtime_device_for(self)._set_warmup_status(detail)
 
     @Property(QObject, constant=True)
     def videoModel(self):
@@ -590,6 +360,22 @@ class HaizFlowController(QObject):
     @Property(QObject, constant=True)
     def channelImporter(self):
         return self._channel_importer
+
+    @Property(bool, notify=mediaImportChanged)
+    def mediaImportBusy(self):
+        return self._media_import_busy
+
+    @Property(int, notify=mediaImportChanged)
+    def mediaImportTotal(self):
+        return self._media_import_total
+
+    @Property(int, notify=mediaImportChanged)
+    def mediaImportCompleted(self):
+        return self._media_import_completed
+
+    @Property(str, notify=mediaImportChanged)
+    def mediaImportStatus(self):
+        return self._media_import_status
 
     @Property(bool, notify=channelImportChanged)
     def hasChannelImportSession(self):
@@ -1182,572 +968,121 @@ class HaizFlowController(QObject):
 
     @Slot()
     def downloadInspectedVideo(self):
-        if not self.hasOpenProject:
-            self._url_importer.complete_import(False, "Open or create a project before downloading a video.")
-            return
-        if self._project_type == "single" and self.isSelectedVideoProcessing:
-            self._url_importer.complete_import(
-                False,
-                "Pause or finish the current video before replacing it.",
-            )
-            return
-        project_root = self._selected_project_root()
-        self._url_import_target = {
-            "project_key": self._selected_project_key,
-            "project_name": self._project_name,
-            "project_directory": self._project_directory,
-            "project_type": self._project_type,
-            "selected_video_id": self._selected_video_id,
-            "config": self._build_config(),
-            "media_source": {
-                "type": "video_url",
-                "platform": self._url_importer.platform,
-                "source_url": self._url_importer.url,
-                "imported_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
-            },
-        }
-        if not self._url_importer.start_download(project_root):
-            self._url_import_target = None
+        HaizFlowController._project_import_for(self).download_inspected_video()
 
     def _handle_url_download_ready(self, path, _workspace, mode):
-        target = self._url_import_target
-        self._url_import_target = None
-        imported = self._import_downloaded_video(path, mode, target)
-
-        message = "" if imported else "The video was downloaded but could not be added to the project."
-        self._url_importer.complete_import(imported, message)
+        HaizFlowController._project_import_for(self).handle_url_download_ready(path, _workspace, mode)
 
     def _import_downloaded_video(self, path: str, mode: str, target) -> bool:
-        """Commit an async URL download to the project that requested it."""
-        if not target:
-            if mode == "batch":
-                previous_count = self.batchCount
-                self.importBatchVideos([path])
-                return self.batchCount > previous_count
-            if self._selected_video_id:
-                return self.replaceSelectedVideoVideo(path)
-            return self.importVideo(path)
-
-        target_video_id = target.get("selected_video_id")
-        if mode != "batch" and target_video_id:
-            return self._replace_video_video(target_video_id, path, target.get("media_source"))
-
-        config = target.get("config")
-        if not isinstance(config, VideoConfig):
-            return False
-        registered_keys = {project.get("key") for project in project_store.list_projects()}
-        if target.get("project_key") not in registered_keys:
-            QMessageBox.warning(None, "Import video", "The destination project no longer exists.")
-            return False
-        try:
-            import_kwargs = {
-                "project_name": str(target.get("project_name") or ""),
-                "project_directory": str(target.get("project_directory") or ""),
-            }
-            if target.get("media_source"):
-                import_kwargs["media_source"] = target["media_source"]
-            video = create_desktop_video(
-                path,
-                config,
-                **import_kwargs,
-                project_key_value=str(target.get("project_key") or ""),
-            )
-            thumbnail_path = self._create_video_thumbnail_path(
-                video.files["video_input"],
-                self._video_thumbnail_path(video.video_id),
-            )
-            if thumbnail_path:
-                video.files["thumbnail"] = thumbnail_path
-                video_store.save_video(video)
-        except Exception as exc:
-            QMessageBox.warning(None, "Import video", str(exc))
-            return False
-
-        target_is_open = target.get("project_key") == self._selected_project_key
-        if target_is_open and mode == "batch":
-            self._batch_video_ids.append(video.video_id)
-            self._refresh_batch_model()
-            self.batchChanged.emit()
-        elif target_is_open:
-            self._select_video(video)
-        self.refreshVideos()
-        return True
+        return HaizFlowController._project_import_for(self).import_downloaded_video(path, mode, target)
 
     def _current_project_media_keys(self) -> set[str]:
-        keys = set()
-        for video in video_store.list_videos():
-            if not video.project_directory:
-                continue
-            key = self._video_project_key(video)
-            if key != self._selected_project_key:
-                continue
-            source = getattr(video, "media_source", None)
-            platform = str(getattr(source, "platform", "") or "").strip().lower()
-            remote_video_id = str(getattr(source, "remote_video_id", "") or "").strip().lower()
-            source_url = str(getattr(source, "source_url", "") or "").strip().lower()
-            if platform and remote_video_id:
-                keys.add(f"{platform}:{remote_video_id}")
-            if source_url:
-                keys.add(source_url)
-                keys.add(normalize_remote_url(source_url))
-        return keys
+        return HaizFlowController._project_import_for(self).current_project_media_keys()
 
     @Slot(result=bool)
     def prepareChannelImport(self):
-        if not self.hasOpenProject or self._project_type != "batch":
-            QMessageBox.information(
-                None,
-                "Channel import",
-                "Open or create a batch project before importing a channel.",
-            )
-            return False
-        project_root = self._selected_project_root()
-        self._channel_importer.attach_project(
-            self._selected_project_key,
-            project_root,
-            self._current_project_media_keys(),
-        )
-        return True
+        return HaizFlowController._project_import_for(self).prepare_channel_import()
 
     @Slot(result=bool)
     def startChannelDownloads(self):
-        if not self.prepareChannelImport() or self._channel_importer.selectedCount <= 0:
-            return False
-        session_id = self._channel_importer.sessionId
-        if not session_id:
-            return False
-        self._remember_channel_import_target(session_id)
-        # The coordinator continuously throttles to one worker while the model
-        # pipeline is active and can return to two when the device is idle.
-        started_session_id = self._channel_importer.start_downloads(2)
-        if not started_session_id:
-            self._channel_import_targets.pop(session_id, None)
-            return False
-        return True
+        return HaizFlowController._project_import_for(self).start_channel_downloads()
 
     def _remember_channel_import_target(self, session_id: str) -> None:
-        self._channel_import_targets[session_id] = {
-            "project_key": self._selected_project_key,
-            "project_name": self._project_name,
-            "project_directory": self._project_directory,
-            "project_type": "batch",
-            "config": self._build_config().model_copy(deep=True),
-            "channel_url": self._channel_importer.channelUrl,
-            "channel_name": self._channel_importer.channelName,
-        }
+        HaizFlowController._project_import_for(self).remember_channel_import_target(session_id)
 
     @Slot(int, result=bool)
     def retryChannelVideo(self, row):
-        if not self.prepareChannelImport():
-            return False
-        session_id = self._channel_importer.sessionId
-        if not session_id:
-            return False
-        self._remember_channel_import_target(session_id)
-        if not self._channel_importer.retry(int(row)):
-            self._channel_import_targets.pop(session_id, None)
-            return False
-        return True
+        return HaizFlowController._project_import_for(self).retry_channel_video(row)
 
     def _handle_channel_video_ready(self, path, _workspace, candidate_payload, project_key, session_id):
-        target = self._channel_import_targets.get(session_id)
-        candidate = dict(candidate_payload or {})
-        remote_video_id = str(candidate.get("remote_video_id") or "")
-        if not target or target.get("project_key") != project_key:
-            self._channel_importer.complete_video(
-                session_id,
-                remote_video_id,
-                False,
-                "The destination project is no longer available.",
-            )
-            return
-        registered_keys = {project.get("key") for project in project_store.list_projects()}
-        if project_key not in registered_keys:
-            self._channel_importer.complete_video(
-                session_id,
-                remote_video_id,
-                False,
-                "The destination project was deleted.",
-            )
-            return
-
-        media_source = {
-            "type": "channel",
-            "platform": str(candidate.get("platform") or ""),
-            "remote_video_id": remote_video_id,
-            "source_url": str(candidate.get("source_url") or ""),
-            "channel_url": str(target.get("channel_url") or ""),
-            "channel_name": str(target.get("channel_name") or candidate.get("uploader") or ""),
-            "import_session_id": session_id,
-            "imported_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
-        }
-        try:
-            video = create_desktop_video(
-                path,
-                target["config"].model_copy(deep=True),
-                project_name=str(target.get("project_name") or ""),
-                project_directory=str(target.get("project_directory") or ""),
-                media_source=media_source,
-                move_input=True,
-                project_key_value=project_key,
-            )
-            thumbnail_path = self._create_video_thumbnail_path(
-                video.files["video_input"],
-                self._video_thumbnail_path(video.video_id),
-            )
-            if thumbnail_path:
-                video.files["thumbnail"] = thumbnail_path
-                video_store.save_video(video)
-        except Exception as exc:
-            self._channel_importer.complete_video(session_id, remote_video_id, False, str(exc))
-            return
-
-        if project_key == self._selected_project_key and self._project_type == "batch":
-            if video.video_id not in self._batch_video_ids:
-                self._batch_video_ids.append(video.video_id)
-            self._refresh_batch_model()
-            self.batchChanged.emit()
-        self.refreshVideos()
-        self._channel_importer.complete_video(session_id, remote_video_id, True)
+        HaizFlowController._project_import_for(self).handle_channel_video_ready(path, _workspace, candidate_payload, project_key, session_id)
 
     @Slot(str)
     def _finish_channel_import_target(self, session_id):
-        self._channel_import_targets.pop(str(session_id), None)
+        HaizFlowController._project_import_for(self).finish_channel_import_target(session_id)
 
     @Slot()
     def browseVideo(self):
-        path, _ = QFileDialog.getOpenFileName(None, "Choose input video", "", "Video files (*.mp4 *.mov *.mkv);;All files (*.*)")
-        if path:
-            if self._selected_video_id:
-                self.replaceSelectedVideoVideo(path)
-            else:
-                self.importVideo(path)
+        HaizFlowController._project_import_for(self).browse_video()
 
     @Slot(str, result=bool)
     def replaceSelectedVideoVideo(self, path):
-        return self._replace_video_video(self._selected_video_id, path)
+        return HaizFlowController._project_import_for(self).replace_video(self._selected_video_id, path)
 
     def _replace_video_video(self, video_id, path, media_source=None):
-        video = video_store.get_video(video_id) if video_id else None
-        normalized_path = self._normalize_video_path(path)
-        if not video:
-            return False
-        if video.status == "processing" or self._processing_queue.active_video_id == video.video_id:
-            QMessageBox.information(None, "Replace video", "Pause or finish this video before replacing it.")
-            return False
-        if not os.path.isfile(normalized_path) or os.path.splitext(normalized_path)[1].lower() not in {".mp4", ".mov", ".mkv"}:
-            QMessageBox.warning(None, "Invalid video", "Choose an MP4, MOV, or MKV video file.")
-            return False
-        if self._processing_queue.discard(video.video_id):
-            self._update_queue_positions()
-        try:
-            video = video_store.replace_video_input(video.video_id, normalized_path, media_source=media_source)
-        except (OSError, RuntimeError) as exc:
-            QMessageBox.warning(None, "Replace video", str(exc))
-            return False
-        if not video:
-            return False
-        destination = video.files["video_input"]
-        try:
-            video.video_width, video.video_height = get_video_dimensions(destination)
-        except RuntimeError:
-            video.video_width, video.video_height = 0, 0
-        thumbnail_path = self._create_video_thumbnail_path(destination, self._video_thumbnail_path(video.video_id))
-        if thumbnail_path:
-            video.files["thumbnail"] = thumbnail_path
-        video_store.save_video(video)
-        # The managed input path remains stable (input/video.ext) after a
-        # replacement, so explicitly refresh the image source as well.
-        update_open_view = self._selected_video_id == video.video_id
-        if update_open_view:
-            self._set_video_path(destination, refresh_thumbnail=True)
-        video_store.log_to_video(video.video_id, f"Input video replaced with: {video.original_filename}")
-        if update_open_view:
-            self._replace_logs(self._read_video_logs(video.video_id))
-            self.videoThumbnailChanged.emit()
-            self.selectedVideoChanged.emit()
-            self.logsChanged.emit()
-        self.refreshVideos()
-        self._log_queue.put("__QUEUE_CHANGED__")
-        return True
+        return HaizFlowController._project_import_for(self).replace_video(video_id, path, media_source)
 
     @Slot()
     def browseProjectDirectory(self):
-        os.makedirs(self._project_directory, exist_ok=True)
-        path = QFileDialog.getExistingDirectory(None, "Choose project storage location", self._project_directory)
-        if path:
-            self._project_directory = os.path.abspath(path)
-            self.projectSetupChanged.emit()
+        HaizFlowController._project_import_for(self).browse_project_directory()
 
     @Slot(str, str, str, result=bool)
     def prepareProject(self, project_name, project_directory, project_type):
-        project_name = project_name.strip()
-        project_directory = project_directory.strip()
-        if not project_name:
-            QMessageBox.warning(None, "Project name", "Enter a project name.")
-            return False
-        if not project_directory:
-            QMessageBox.warning(None, "Project storage location", "Choose a location for this project.")
-            return False
-        self._project_name = project_name
-        self._project_directory = os.path.abspath(project_directory)
-        self._project_type = "batch" if project_type == "batch" else "single"
-        try:
-            project = project_store.create_project(
-                self._project_name,
-                self._project_directory,
-                self._project_type,
-            )
-        except (OSError, ValueError, RuntimeError) as exc:
-            QMessageBox.warning(None, "Project storage location", f"Cannot create the project at this location: {exc}")
-            return False
-        self._selected_project_key = project["key"]
-        self.videoPath = ""
-        self._selected_video_id = None
-        self._batch_video_ids = []
-        self._refresh_batch_model()
-        self._clear_logs()
-        self.projectSetupChanged.emit()
-        self.selectedVideoChanged.emit()
-        self.logsChanged.emit()
-        self.refreshVideos()
-        self.projectPrepared.emit()
-        return True
+        return HaizFlowController._project_import_for(self).prepare_project(project_name, project_directory, project_type)
 
     @Slot(str, str, str, result=bool)
     def applySettings(self, theme, language, processing_device):
-        processing_device = str(processing_device).lower()
-        pipeline_active = self._pipeline_is_active()
-        if processing_device != self._settings_processing_device and not (pipeline_active or self._device_switching):
-            clear_runtime_profile_cache()
-        compatible, compatibility_message = validate_processing_device(processing_device)
-        if not compatible:
-            QMessageBox.warning(None, "Processing device", compatibility_message)
-            return False
-        device_changed = processing_device != self._settings_processing_device
-        try:
-            settings = desktop_settings.save_settings(
-                {
-                    "theme": theme,
-                    "language": language,
-                    "processing_device": processing_device,
-                    "processing_device_origin": "manual",
-                }
-            )
-        except OSError as exc:
-            QMessageBox.warning(None, "Settings", f"Cannot save settings: {exc}")
-            return False
-        self._settings_theme = settings["theme"]
-        self._settings_language = settings["language"]
-        self._settings_processing_device = settings["processing_device"]
-        self._processing_device_origin = settings["processing_device_origin"]
-        _set_ui_language(self._settings_language)
-        if device_changed and (pipeline_active or self._device_switching):
-            self._pending_processing_device = self._settings_processing_device
-            self._status_message = "Settings applied. The current video keeps its processing device."
-        else:
-            self._status_message = "Settings applied"
-        self.settingsChanged.emit()
-        self.languageOptionsChanged.emit()
-        self.statusMessageChanged.emit()
-        if device_changed and not (pipeline_active or self._device_switching):
-            self._switch_processing_device(self._settings_processing_device)
-        return True
+        return HaizFlowController._settings_delegate_for(self).apply(theme, language, processing_device)
+
+    @staticmethod
+    def _settings_delegate_for(host):
+        return getattr(host, "_settings_controller", None) or SettingsController(host)
 
     @Slot()
     def resetSettings(self):
-        pipeline_active = self._pipeline_is_active()
-        try:
-            settings = desktop_settings.reset_settings()
-            settings["processing_device"] = recommended_processing_device(detect_hardware_capabilities())
-            settings["processing_device_origin"] = "detected"
-            settings = desktop_settings.save_settings(settings)
-        except OSError as exc:
-            QMessageBox.warning(None, "Settings", f"Cannot restore defaults: {exc}")
-            return
-        self._settings_theme = settings["theme"]
-        self._settings_language = settings["language"]
-        _set_ui_language(self._settings_language)
-        device_changed = settings["processing_device"] != self._settings_processing_device
-        self._settings_processing_device = settings["processing_device"]
-        self._processing_device_origin = settings["processing_device_origin"]
-        if device_changed and (pipeline_active or self._device_switching):
-            self._pending_processing_device = self._settings_processing_device
-            self._status_message = "Settings reset. The processing device changes after the current video."
-        else:
-            self._status_message = "Settings reset to defaults"
-        self.settingsChanged.emit()
-        self.languageOptionsChanged.emit()
-        self.statusMessageChanged.emit()
-        if device_changed and not (pipeline_active or self._device_switching):
-            self._switch_processing_device(self._settings_processing_device)
+        HaizFlowController._settings_delegate_for(self).reset()
 
     @Slot(str, result=bool)
     def importVideo(self, path):
-        normalized_path = self._normalize_video_path(path)
-        if not os.path.isfile(normalized_path):
-            QMessageBox.warning(None, "Invalid video", "The dropped file is unavailable.")
-            return False
-        if os.path.splitext(normalized_path)[1].lower() not in {".mp4", ".mov", ".mkv"}:
-            QMessageBox.warning(None, "Unsupported file", "Choose an MP4, MOV, or MKV video file.")
-            return False
-        if self.hasOpenProject:
-            try:
-                video = create_desktop_video(
-                    normalized_path,
-                    self._build_config(),
-                    project_name=self._project_name,
-                    project_directory=self._project_directory,
-                    project_key_value=self._selected_project_key,
-                )
-            except Exception as exc:
-                QMessageBox.critical(None, "Cannot import video", str(exc))
-                return False
-            self._assign_project_thumbnail(video)
-            self._select_video(video)
-            self.refreshVideos()
-            return True
-
-        self._selected_video_id = None
-        self.videoPath = normalized_path
-        self.selectedVideoChanged.emit()
-        return True
+        return HaizFlowController._project_import_for(self).import_video(path)
 
     @Slot()
     def browseBatchVideos(self):
-        paths, _ = QFileDialog.getOpenFileNames(
-            None,
-            "Choose videos for batch processing",
-            "",
-            "Video files (*.mp4 *.mov *.mkv);;All files (*.*)",
-        )
-        if paths:
-            self.importBatchVideos(paths)
+        HaizFlowController._project_import_for(self).browse_batch_videos()
 
     @Slot()
     def browseBatchFolder(self):
-        folder = QFileDialog.getExistingDirectory(
-            None,
-            "Choose a folder of videos for batch processing",
-            "",
-            QFileDialog.Option.ShowDirsOnly,
-        )
-        if folder:
-            self.importBatchVideos([folder])
+        HaizFlowController._project_import_for(self).browse_batch_folder()
 
     @Slot("QVariantList")
     def importBatchVideos(self, paths):
-        valid_paths, invalid_names = self._collect_batch_video_paths(paths)
-
-        if not valid_paths:
-            if invalid_names:
-                QMessageBox.warning(
-                    None,
-                    "Some videos were skipped",
-                    self._batch_rejection_message(invalid_names),
-                )
-            else:
-                QMessageBox.warning(None, "No supported videos", "Choose MP4, MOV, or MKV video files.")
-            return
-
-        created_ids = []
-        errors = []
-        for path in valid_paths:
-            try:
-                video = create_desktop_video(
-                    path,
-                    self._build_config(),
-                    project_name=self._project_name,
-                    project_directory=self._project_directory,
-                    project_key_value=self._selected_project_key,
-                )
-                thumbnail_path = self._create_video_thumbnail_path(
-                    video.files["video_input"],
-                    self._video_thumbnail_path(video.video_id),
-                )
-                if thumbnail_path:
-                    video.files["thumbnail"] = thumbnail_path
-                    video_store.save_video(video)
-                created_ids.append(video.video_id)
-            except Exception as exc:
-                errors.append(f"{os.path.basename(path)}: {exc}")
-
-        self._batch_video_ids.extend(created_ids)
-        self._refresh_batch_model()
-        self.refreshVideos()
-        self.batchChanged.emit()
-
-        rejected = invalid_names + errors
-        if rejected:
-            QMessageBox.warning(
-                None,
-                "Some videos were skipped",
-                self._batch_rejection_message(rejected),
-            )
+        HaizFlowController._project_import_for(self).import_batch_videos(paths)
 
     def _batch_rejection_message(self, rejected) -> str:
-        rejected = [str(item) for item in rejected]
-        shown = rejected[:12]
-        remaining = len(rejected) - len(shown)
-        if remaining:
-            suffix = f"... và {remaining} mục khác" if self._settings_language == "vi" else f"... and {remaining} more"
-            shown.append(suffix)
-        if self._settings_language == "vi":
-            heading = f"{len(rejected)} mục không được hỗ trợ hoặc không thể đọc:"
-        else:
-            heading = f"{len(rejected)} unsupported or unreadable item(s):"
-        return f"{heading}\n\n" + "\n".join(shown)
+        return HaizFlowController._project_import_for(self).batch_rejection_message(rejected)
+
+    @staticmethod
+    def _project_commands_for(host):
+        return getattr(host, "_project_commands", None) or ProjectCommandsController(
+            host, create_video=create_desktop_video
+        )
+
+    @staticmethod
+    def _project_import_for(host):
+        return getattr(host, "_project_import", None) or ProjectImportController(
+            host, create_video=create_desktop_video
+        )
+
+    @staticmethod
+    def _catalog_media_for(host):
+        return getattr(host, "_catalog_media", None) or CatalogMediaController(host)
+
+    @staticmethod
+    def _runtime_device_for(host):
+        return getattr(host, "_runtime_device", None) or RuntimeDeviceController(
+            host,
+            unsubscribe=unsubscribe_log,
+            pause=pause_video,
+            shutdown_translation=shutdown_hymt2_worker,
+            detect_hardware=detect_hardware_capabilities,
+        )
 
     @Slot()
     def startBatch(self):
-        pending_ids = []
-        for video_id in self._batch_video_ids:
-            video = video_store.get_video(video_id)
-            if video and video.status == "pending":
-                pending_ids.append(video_id)
-        if not pending_ids:
-            QMessageBox.information(None, "Batch queue", "Add at least one video to the queue.")
-            return
-
-        self._batch_running = True
-        self._batch_stop_requested = False
-        added = self._enqueue_videos(pending_ids)
-        if not added:
-            self._batch_running = False
-            QMessageBox.information(None, "Batch queue", "These videos are already waiting or processing.")
-            return
-        self.batchChanged.emit()
+        HaizFlowController._project_commands_for(self).start_batch()
 
     def _batch_settings_values(self) -> dict[str, object]:
-        videos = [video_store.get_video(video_id) for video_id in self._batch_video_ids]
-        videos = [video for video in videos if video]
-        if not videos:
-            return {
-                "workflowMode": self._workflow_mode,
-                "targetLanguage": self._target_language,
-                "ttsVoice": self._tts_voice,
-                "enableAudioSeparation": self._enable_audio_separation,
-                "originalVolume": self._original_volume,
-            }
-        common, _count = Counter(
-            (
-                video.mode,
-                video.target_language,
-                video.tts_voice,
-                video.enable_audio_separation,
-                video.original_video_volume,
-            )
-            for video in videos
-        ).most_common(1)[0]
-        workflow_mode, target_language, tts_voice, audio_separation, original_volume = common
-        target_language = str(target_language or "vi")
-        return {
-            "workflowMode": "review" if workflow_mode == "review" else "A",
-            "targetLanguage": target_language,
-            "ttsVoice": self._normalized_voice_for_language(target_language, tts_voice),
-            "enableAudioSeparation": bool(audio_separation),
-            "originalVolume": int(original_volume),
-        }
+        return HaizFlowController._project_commands_for(self).batch_settings_values()
 
     @Slot(result="QVariantMap")
     def batchSettings(self):
@@ -1762,30 +1097,9 @@ class HaizFlowController(QObject):
         enable_audio_separation: bool,
         original_volume: int,
     ) -> bool:
-        mode = "review" if workflow_mode == "review" else "A"
-        language = str(target_language or "vi")
-        voice = self._normalized_voice_for_language(language, tts_voice)
-        updated = 0
-        for video_id in self._batch_video_ids:
-            video = video_store.get_video(video_id)
-            if not video or self._processing_queue.contains(video_id):
-                continue
-            video_store.update_video(
-                video_id,
-                mode=mode,
-                source_language="auto",
-                target_language=language,
-                tts_voice=voice,
-                enable_audio_separation=bool(enable_audio_separation),
-                original_video_volume=int(original_volume),
-            )
-            updated += 1
-        if not updated:
-            QMessageBox.information(None, "Batch settings", "Add at least one video before applying settings.")
-            return False
-        self.refreshVideos()
-        self.batchChanged.emit()
-        return True
+        return HaizFlowController._project_commands_for(self).apply_batch_settings(
+            workflow_mode, target_language, tts_voice, enable_audio_separation, original_volume
+        )
 
     @Slot(result=bool)
     def applyBatchSettings(self):
@@ -1816,59 +1130,19 @@ class HaizFlowController(QObject):
 
     @Slot()
     def loadBatchSettings(self):
-        values = self._batch_settings_values()
-        self._workflow_mode = values["workflowMode"]
-        self._target_language = values["targetLanguage"]
-        self._tts_voice = values["ttsVoice"]
-        self._enable_audio_separation = values["enableAudioSeparation"]
-        self._original_volume = values["originalVolume"]
-        self.workflowModeChanged.emit()
-        self.targetLanguageChanged.emit()
-        self.ttsVoiceChanged.emit()
-        self.ttsVoiceOptionsChanged.emit()
-        self.enableAudioSeparationChanged.emit()
-        self.originalVolumeChanged.emit()
+        HaizFlowController._project_commands_for(self).load_batch_settings()
 
     @Slot(result=bool)
     def saveSelectedVideoSettings(self):
-        video = video_store.get_video(self._selected_video_id) if self._selected_video_id else None
-        if not video or video.project_type != "batch" or self._processing_queue.contains(video.video_id):
-            return False
-        self._apply_setup_to_video(video)
-        video_store.log_to_video(video.video_id, "Per-video dubbing settings saved.")
-        self.refreshVideos()
-        self.selectedVideoChanged.emit()
-        self.batchChanged.emit()
-        return True
+        return HaizFlowController._project_commands_for(self).save_selected_video_settings()
 
     @Slot()
     def stopBatch(self):
-        if not self.isBatchRunning:
-            return
-        if QMessageBox.question(None, "Stop batch", "Stop the active video and cancel the remaining queue?") != QMessageBox.StandardButton.Yes:
-            return
-
-        self._batch_stop_requested = True
-        active_video_id = self._processing_queue.active_video_id
-        if active_video_id in self._batch_video_ids:
-            cancel_video(active_video_id)
-            video_store.update_video(active_video_id, status="cancelled", error=None, step="cancelled")
-            video_store.log_to_video(active_video_id, "Batch stop requested. Active subprocesses were force-stopped.")
-        for video_id in self._batch_video_ids:
-            video = video_store.get_video(video_id)
-            if video and self._processing_queue.discard(video_id):
-                video_store.update_video(video_id, status="cancelled", error=None, step="cancelled")
-                video_store.log_to_video(video_id, "Cancelled while waiting in the processing queue.")
-        self._refresh_batch_model()
-        self.batchChanged.emit()
+        HaizFlowController._project_commands_for(self).stop_batch()
 
     @Slot()
     def clearBatch(self):
-        if self.isBatchRunning:
-            return
-        self._batch_video_ids = []
-        self._refresh_batch_model()
-        self.batchChanged.emit()
+        HaizFlowController._project_commands_for(self).clear_batch()
 
     @staticmethod
     def _batch_output_directory(video):
@@ -1914,234 +1188,31 @@ class HaizFlowController(QObject):
 
     @Slot()
     def deleteCurrentBatch(self):
-        batch_ids = list(self._batch_video_ids)
-        if not self.hasOpenProject:
-            return
-        if not batch_ids:
-            self.deleteCurrentProject()
-            return
-        project_name = self._project_name or "this batch"
-        message = (
-            "Delete this batch project and all of its videos?\n\n"
-            f"{project_name}\n{len(batch_ids)} video(s)\n\n"
-            "This removes processing logs, temporary data, copied inputs, and generated videos. "
-            "If processing is active, it will be stopped first."
-        )
-        buttons = QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
-        if QMessageBox.question(
-            None,
-            "Delete project",
-            message,
-            buttons,
-            QMessageBox.StandardButton.No,
-        ) != QMessageBox.StandardButton.Yes:
-            return
-
-        current_key = self._selected_project_key
-        try:
-            project_store.validate_project_deletion_by_key(current_key)
-        except Exception as exc:
-            QMessageBox.warning(None, "Delete project", str(exc))
-            return
-        if not self._channel_importer.cancel_project(current_key):
-            QMessageBox.information(
-                None,
-                "Channel import",
-                "Channel import is still stopping. Try deleting the project again in a moment.",
-            )
-            return
-        for session_id, target in tuple(self._channel_import_targets.items()):
-            if target.get("project_key") == current_key:
-                self._channel_import_targets.pop(session_id, None)
-
-        self._batch_stop_requested = True
-        active_video_id = self._processing_queue.active_video_id
-        if active_video_id in batch_ids:
-            cancel_video(active_video_id)
-
-        failures = []
-        remaining_ids = []
-        for video_id in batch_ids:
-            video = video_store.get_video(video_id)
-            if not video:
-                continue
-            self._deleted_video_ids.add(video_id)
-            self._processing_queue.discard(video_id)
-            if video.status == "processing":
-                cancel_video(video_id)
-            output_directory = self._batch_output_directory(video)
-            try:
-                if output_directory and os.path.isdir(output_directory):
-                    shutil.rmtree(output_directory)
-                video_store.delete_video(video_id)
-                self._remove_empty_batch_output_parents(video)
-            except Exception as exc:
-                failures.append(f"{video.original_filename}: {exc}")
-                remaining_ids.append(video_id)
-
-        self._batch_video_ids = remaining_ids
-        self._refresh_batch_model()
-        self.batchChanged.emit()
-        self._selected_video_id = None
-        self._clear_logs()
-        self.selectedVideoChanged.emit()
-        self.logsChanged.emit()
-        self.refreshVideos()
-
-        if failures:
-            QMessageBox.warning(
-                None,
-                "Batch delete incomplete",
-                "Some videos could not be deleted. You can retry after closing any program using them.\n\n"
-                + "\n".join(failures[:5]),
-            )
-            return
-        try:
-            project_store.delete_project_by_key(current_key)
-        except Exception as exc:
-            QMessageBox.warning(None, "Delete project", str(exc))
-            return
-        self._selected_project_key = ""
-        self._project_name = ""
-        self.projectSetupChanged.emit()
-        self.batchDeleted.emit()
+        HaizFlowController._project_commands_for(self).delete_current_batch()
 
     @Slot()
     def startVideo(self):
-        if not self._video_path.strip():
-            QMessageBox.critical(None, "Missing video", "Please choose an input video.")
-            return
-        try:
-            video = create_desktop_video(self._video_path, self._build_config())
-        except Exception as exc:
-            QMessageBox.critical(None, "Cannot start project", str(exc))
-            return
-
-        self._assign_project_thumbnail(video)
-
-        self._selected_video_id = video.video_id
-        self._replace_logs(self._read_video_logs(video.video_id))
-        self.selectedVideoChanged.emit()
-        self.logsChanged.emit()
-        self.refreshVideos()
-        self._enqueue_video(video.video_id)
+        HaizFlowController._project_commands_for(self).start_video()
 
     @Slot(result=bool)
     def startProjectVideo(self):
-        if not self._video_path.strip():
-            QMessageBox.critical(None, "Missing video", "Please choose an input video.")
-            return False
-        if not self._project_name.strip():
-            QMessageBox.warning(None, "Project name", "Enter a project name.")
-            return False
-        if not self._project_directory.strip():
-            QMessageBox.warning(None, "Project storage location", "Choose a location for this project.")
-            return False
-        selected_video = video_store.get_video(self._selected_video_id) if self._selected_video_id else None
-        if selected_video and self._processing_queue.contains(selected_video.video_id):
-            self._status_message = "This video is already waiting or processing."
-            self.statusMessageChanged.emit()
-            return False
-        if selected_video and selected_video.status == "pending" and not self._processing_queue.contains(selected_video.video_id):
-            self._apply_setup_to_video(selected_video, review_approved=False)
-            video_store.log_to_video(selected_video.video_id, "Processing requested for the imported video.")
-            self._enqueue_video(selected_video.video_id)
-            self.selectedVideoChanged.emit()
-            self.refreshVideos()
-            return True
-        if selected_video:
-            return False
-        try:
-            video = create_desktop_video(
-                self._video_path,
-                self._build_config(),
-                project_name=self._project_name,
-                project_directory=self._project_directory,
-                project_key_value=self._selected_project_key,
-            )
-        except Exception as exc:
-            QMessageBox.critical(None, "Cannot create project", str(exc))
-            return False
-
-        self._assign_project_thumbnail(video)
-
-        self._selected_video_id = video.video_id
-        self._replace_logs(self._read_video_logs(video.video_id))
-        self.selectedVideoChanged.emit()
-        self.logsChanged.emit()
-        self.refreshVideos()
-        self._enqueue_video(video.video_id)
-        return True
+        return HaizFlowController._project_commands_for(self).start_project_video()
 
     @Slot()
     def stopVideo(self):
-        selected_video_id = self._selected_video_id
-        if not selected_video_id or selected_video_id != self._processing_queue.active_video_id:
-            return
-        selected_video = video_store.get_video(selected_video_id)
-        if not selected_video:
-            return
-        if self.isSelectedBatchVideo:
-            self.stopBatch()
-            return
-        if QMessageBox.question(None, "Pause video", "Pause this video? You can resume it later from Projects.") != QMessageBox.StandardButton.Yes:
-            return
-        resume_step = selected_video.step
-        pause_video(selected_video_id)
-        video_store.update_video(selected_video_id, status="paused", error=None, step="paused", resume_step=resume_step, step_detail=f"Paused during {resume_step or 'startup'}")
-        video_store.log_to_video(selected_video_id, "Pause requested. Active subprocesses were stopped.")
-        self.selectedVideoChanged.emit()
-        self.refreshVideos()
+        HaizFlowController._project_commands_for(self).stop_video()
 
     @Slot()
     def resumeSelectedVideo(self):
-        video = video_store.get_video(self._selected_video_id) if self._selected_video_id else None
-        if not video or video.status != "paused":
-            return
-        video_store.update_video(video.video_id, status="pending", step="queued", step_detail="Queued to resume")
-        self._enqueue_video(video.video_id)
-        self.selectedVideoChanged.emit()
+        HaizFlowController._project_commands_for(self).resume_selected_video()
 
     @Slot()
     def restartSelectedVideo(self):
-        video = video_store.get_video(self._selected_video_id) if self._selected_video_id else None
-        if not video or self._processing_queue.contains(video.video_id):
-            return
-        if self._device_switching:
-            QMessageBox.information(None, "Processing device", "Wait for the processing device to finish switching before restarting.")
-            return
-        if QMessageBox.question(None, "Restart video", "Apply the current dubbing setup and restart this project?") != QMessageBox.StandardButton.Yes:
-            return
-        self._apply_setup_to_video(video, review_approved=False)
-        restarted = video_store.prepare_video_restart(video.video_id)
-        if not restarted:
-            return
-        profile = runtime_profile()
-        video_store.log_to_video(
-            restarted.video_id,
-            f"Restart requested with the latest dubbing setup and runtime: {profile.summary}.",
-        )
-        self._enqueue_video(restarted.video_id)
-        self.selectedVideoChanged.emit()
+        HaizFlowController._project_commands_for(self).restart_selected_video()
 
     @Slot(str)
     def approveTranslationReview(self, payload):
-        video = video_store.get_video(self._selected_video_id) if self._selected_video_id else None
-        if not video or video.status != "awaiting_review":
-            return
-        try:
-            segments = json.loads(payload)
-            if not isinstance(segments, list) or any(not str(item.get("text", "")).strip() for item in segments):
-                raise ValueError("Every translation must contain text.")
-            with open(video.files["transcript_json"], "w", encoding="utf-8") as file:
-                json.dump(segments, file, ensure_ascii=False, indent=2)
-        except (OSError, ValueError, json.JSONDecodeError) as exc:
-            QMessageBox.warning(None, "Translation review", str(exc))
-            return
-        video_store.update_video(video.video_id, review_approved=True, status="pending", step="queued", step_detail="Queued to create dub")
-        video_store.log_to_video(video.video_id, f"Translation review approved with {len(segments)} edited segments. Added to the processing queue.")
-        self._enqueue_video(video.video_id)
-        self.selectedVideoChanged.emit()
+        HaizFlowController._project_commands_for(self).approve_translation_review(payload)
 
     @Slot(int)
     def selectVideo(self, row: int):
@@ -2151,45 +1222,7 @@ class HaizFlowController(QObject):
         self._select_video(video)
 
     def _select_video(self, video):
-        self._selected_video_id = video.video_id
-        self._project_name = video.project_name or os.path.splitext(video.original_filename)[0]
-        self._project_directory = video.project_directory or self._project_directory
-        self._project_type = "batch" if getattr(video, "project_type", "single") == "batch" else "single"
-        self._selected_project_key = self._video_project_key(video)
-        if (
-            self._processing_queue.active_video_id != video.video_id
-            and video.status != "processing"
-            and (video.source_language != "auto" or video.output_format != "keep_ratio")
-        ):
-            video = video_store.update_video(video.video_id, source_language="auto", output_format="keep_ratio") or video
-        if migrate_legacy_single_export(video):
-            video = video_store.get_video(video.video_id) or video
-        self._workflow_mode = video.mode
-        self._target_language = str(video.target_language or "vi")
-        self._tts_voice = self._normalized_voice_for_language(self._target_language, video.tts_voice)
-        if self._tts_voice != video.tts_voice and video.status != "processing":
-            video = video_store.update_video(video.video_id, tts_voice=self._tts_voice) or video
-            video_store.log_to_video(video.video_id, "Updated an incompatible saved TTS voice to match the target language.")
-        self._enable_audio_separation = video.enable_audio_separation
-        self._original_volume = video.original_video_volume
-        input_path = self._resolve_video_file(video, ("video_input", "input_video"), ("input", "video.mp4"))
-        thumbnail_path = video.files.get("thumbnail") or ""
-        self._video_path = input_path
-        self._video_thumbnail_source = thumbnail_source(thumbnail_path)
-        self._load_video_preview(video)
-        self._replace_logs(self._read_video_logs(video.video_id))
-        self.videoPathChanged.emit()
-        self.videoThumbnailChanged.emit()
-        self.targetLanguageChanged.emit()
-        self.ttsVoiceChanged.emit()
-        self.ttsVoiceOptionsChanged.emit()
-        self.enableAudioSeparationChanged.emit()
-        self.originalVolumeChanged.emit()
-        self.workflowModeChanged.emit()
-        self.projectSetupChanged.emit()
-        self.selectedVideoChanged.emit()
-        self.processingChanged.emit()
-        self.logsChanged.emit()
+        HaizFlowController._project_workspace_for(self).select_video(video)
 
     @Slot(int)
     def selectBatchVideo(self, row: int):
@@ -2214,60 +1247,15 @@ class HaizFlowController(QObject):
         self._open_project_summary(project)
 
     def _open_project_summary(self, project):
-        videos = project["videos"]
-        self._project_name = project["project_name"]
-        self._project_directory = project["project_directory"] or self._project_directory
-        self._project_type = project["project_type"]
-        self._selected_project_key = project["key"]
-        self._batch_video_ids = [video.video_id for video in videos] if self._project_type == "batch" else []
-        self._refresh_batch_model()
-        if videos:
-            self._select_video(videos[0])
-        else:
-            self.videoPath = ""
-            self._selected_video_id = None
-            self._clear_logs()
-            self.selectedVideoChanged.emit()
-            self.logsChanged.emit()
-        self._project_type = project["project_type"]
-        self.projectSetupChanged.emit()
-        self.batchChanged.emit()
-        if self._project_type == "batch":
-            self.prepareChannelImport()
+        HaizFlowController._project_workspace_for(self).open_project_summary(project)
+
+    @staticmethod
+    def _project_workspace_for(host):
+        return getattr(host, "_project_workspace", None) or ProjectWorkspaceController(host)
 
     @Slot()
     def deleteSelectedVideo(self):
-        if not self._selected_video_id:
-            QMessageBox.information(None, "No video selected", "Select a video in this batch first.")
-            return
-        video_id = self._selected_video_id
-        video = video_store.get_video(video_id)
-        label = video.original_filename if video else video_id
-        message = f"Remove this video from the batch project and delete its generated files?\n\n{label}\n\nIf it is running, it will be stopped first."
-        if QMessageBox.question(None, "Remove video", message) != QMessageBox.StandardButton.Yes:
-            return
-        if video and (video.status == "processing" or self._processing_queue.active_video_id == video_id):
-            cancel_video(video_id)
-            video_store.update_video(video_id, status="cancelled", error=None, step="cancelled")
-        self._deleted_video_ids.add(video_id)
-        self._processing_queue.discard(video_id)
-        try:
-            deleted = video_store.delete_video(video_id)
-        except Exception as exc:
-            QMessageBox.critical(None, "Delete failed", str(exc))
-            return
-        if not deleted:
-            QMessageBox.information(None, "Already removed", "Video data was already removed.")
-        if video_id in self._batch_video_ids:
-            self._batch_video_ids.remove(video_id)
-            self._refresh_batch_model()
-            self.batchChanged.emit()
-        self._selected_video_id = None
-        self._clear_logs()
-        self.selectedVideoChanged.emit()
-        self.logsChanged.emit()
-        self.refreshVideos()
-        self.videoDeleted.emit()
+        HaizFlowController._project_commands_for(self).delete_selected_video()
 
     @Slot()
     def openProjectFolder(self):
@@ -2280,202 +1268,30 @@ class HaizFlowController(QObject):
 
     @Slot()
     def deleteCurrentProject(self):
-        if not self.hasOpenProject:
-            QMessageBox.information(None, "Delete project", "Select a project first.")
-            return
-
-        current_key = self._selected_project_key
-        project_videos = [
-            video
-            for video in video_store.list_videos()
-            if video.project_directory
-            and self._video_project_key(video) == current_key
-        ]
-        video_label = "" if not project_videos else f"\n\nThis also removes {len(project_videos)} video(s) and their generated files."
-        message = f"Delete project '{self._project_name}' and all files inside its project folder?{video_label}"
-        if QMessageBox.question(None, "Delete project", message) != QMessageBox.StandardButton.Yes:
-            return
-
-        try:
-            project_store.validate_project_deletion_by_key(current_key)
-        except Exception as exc:
-            QMessageBox.critical(None, "Delete project", str(exc))
-            return
-        if not self._channel_importer.cancel_project(current_key):
-            QMessageBox.information(
-                None,
-                "Channel import",
-                "Channel import is still stopping. Try deleting the project again in a moment.",
-            )
-            return
-        for session_id, target in tuple(self._channel_import_targets.items()):
-            if target.get("project_key") == current_key:
-                self._channel_import_targets.pop(session_id, None)
-
-        try:
-            for video in project_videos:
-                self._processing_queue.discard(video.video_id)
-                if video.status == "processing" or self._processing_queue.active_video_id == video.video_id:
-                    cancel_video(video.video_id)
-                    video_store.update_video(video.video_id, status="cancelled", error=None, step="cancelled")
-                self._deleted_video_ids.add(video.video_id)
-                video_store.delete_video(video.video_id)
-            project_store.delete_project_by_key(current_key)
-        except Exception as exc:
-            QMessageBox.critical(None, "Delete project", str(exc))
-            return
-
-        self._selected_video_id = None
-        self._selected_project_key = ""
-        self._batch_video_ids = []
-        self._clear_logs()
-        self.videoPath = ""
-        self._refresh_batch_model()
-        self.selectedVideoChanged.emit()
-        self.projectSetupChanged.emit()
-        self.logsChanged.emit()
-        self.batchChanged.emit()
-        self.refreshVideos()
-        self.videoDeleted.emit()
+        HaizFlowController._project_commands_for(self).delete_current_project()
 
     @Slot()
     def refreshVideos(self):
-        all_videos = video_store.list_videos()
-        self._catalog_videos = {video.video_id: video for video in all_videos}
-        self.videos.set_videos(all_videos[:40])
-        summaries = self._build_project_summaries(all_videos, project_store.list_projects())
-        self._project_summaries_by_key = {project["key"]: project for project in summaries}
-        self.projects.set_projects(summaries)
-        self.single_projects.set_projects(
-            [project for project in summaries if project["project_type"] == "single"]
-        )
-        self.batch_projects.set_projects(
-            [project for project in summaries if project["project_type"] == "batch"]
-        )
-        self._refresh_batch_model()
-        selected = video_store.get_video(self._selected_video_id) if self._selected_video_id else None
-        self._selected_video_snapshot = selected
-        self.selectedVideoChanged.emit()
-        missing_thumbnails = self._missing_thumbnail_ids(all_videos)
-        if missing_thumbnails and not self._thumbnail_refresh_running:
-            self._thumbnail_refresh_running = True
-            threading.Thread(target=self._create_missing_thumbnails, args=(missing_thumbnails,), daemon=True).start()
-        self._last_video_metadata_revision = video_store.metadata_revision()
+        HaizFlowController._project_workspace_for(self).refresh_videos()
 
     def _apply_video_metadata_changes(self, video_ids: set[str]) -> bool:
-        """Patch visible models from changed metadata instead of rebuilding catalog."""
-        changed = []
-        affected_project_keys = set()
-        for video_id in video_ids:
-            previous = self._catalog_videos.get(video_id)
-            current = video_store.get_video(video_id)
-            if previous is None or current is None:
-                return False
-            self._catalog_videos[video_id] = current
-            changed.append(current)
-            affected_project_keys.add(self._video_project_key(previous))
-            affected_project_keys.add(self._video_project_key(current))
-
-        for video in changed:
-            self.videos.update_video(video)
-            self.batch_videos.update_video(video)
-
-        for project_key in affected_project_keys:
-            previous_summary = self._project_summaries_by_key.get(project_key)
-            if previous_summary is None:
-                return False
-            project_videos = [
-                video for video in self._catalog_videos.values()
-                if self._video_project_key(video) == project_key
-            ]
-            summaries = self._build_project_summaries(project_videos, [previous_summary])
-            if len(summaries) != 1:
-                return False
-            summary = summaries[0]
-            self._project_summaries_by_key[project_key] = summary
-            if not (
-                self.projects.update_project(summary)
-                and (
-                    self.batch_projects.update_project(summary)
-                    if summary["project_type"] == "batch"
-                    else self.single_projects.update_project(summary)
-                )
-            ):
-                return False
-
-        if self._selected_video_id in video_ids:
-            self._selected_video_snapshot = None
-            self.selectedVideoChanged.emit()
-        return True
+        return HaizFlowController._project_workspace_for(self).apply_video_metadata_changes(video_ids)
 
     @staticmethod
     def _thumbnail_retry_signature(source_path: str) -> str:
-        """Identify the exact source for which thumbnail creation failed."""
-        normalized_path = os.path.abspath(source_path) if source_path else "<missing-source>"
-        try:
-            source_stat = os.stat(normalized_path)
-        except OSError:
-            return f"{normalized_path}:missing"
-        return f"{normalized_path}:{source_stat.st_mtime_ns}:{source_stat.st_size}"
+        return CatalogMediaController.thumbnail_retry_signature(source_path)
 
     def _missing_thumbnail_ids(self, videos) -> list[str]:
-        known_video_ids = {video.video_id for video in videos}
-        with self._thumbnail_retry_lock:
-            self._thumbnail_retry_failures = {
-                video_id: failure
-                for video_id, failure in self._thumbnail_retry_failures.items()
-                if video_id in known_video_ids
-            }
-
-        missing = []
-        for video in videos:
-            if thumbnail_source(video.files.get("thumbnail") or ""):
-                continue
-            source_path = self._resolve_video_file(video, ("video_input", "input_video"), ("input", "video.mp4"))
-            signature = self._thumbnail_retry_signature(source_path)
-            with self._thumbnail_retry_lock:
-                failure = self._thumbnail_retry_failures.get(video.video_id)
-                if failure and failure[0] != signature:
-                    self._thumbnail_retry_failures.pop(video.video_id, None)
-                    failure = None
-                if failure and (
-                    failure[1] >= self._THUMBNAIL_RETRY_MAX_ATTEMPTS or time.monotonic() < failure[2]
-                ):
-                    continue
-            missing.append(video.video_id)
-        return missing
+        return HaizFlowController._catalog_media_for(self).missing_thumbnail_ids(videos)
 
     def _record_thumbnail_failure(self, video_id: str, signature: str) -> None:
-        with self._thumbnail_retry_lock:
-            previous = self._thumbnail_retry_failures.get(video_id)
-            attempts = previous[1] + 1 if previous and previous[0] == signature else 1
-            delay = min(
-                300.0,
-                self._THUMBNAIL_RETRY_INITIAL_DELAY_SECONDS * (2 ** (attempts - 1)),
-            )
-            self._thumbnail_retry_failures[video_id] = (signature, attempts, time.monotonic() + delay)
+        HaizFlowController._catalog_media_for(self).record_thumbnail_failure(video_id, signature)
 
     def _clear_thumbnail_failure(self, video_id: str) -> None:
-        with self._thumbnail_retry_lock:
-            self._thumbnail_retry_failures.pop(video_id, None)
+        HaizFlowController._catalog_media_for(self).clear_thumbnail_failure(video_id)
 
     def _create_missing_thumbnails(self, video_ids):
-        try:
-            for video_id in video_ids:
-                video = video_store.get_video(video_id)
-                if not video or thumbnail_source(video.files.get("thumbnail") or ""):
-                    continue
-                video_path = self._resolve_video_file(video, ("video_input", "input_video"), ("input", "video.mp4"))
-                signature = self._thumbnail_retry_signature(video_path)
-                thumbnail_path = self._create_video_thumbnail_path(video_path, self._video_thumbnail_path(video.video_id))
-                if thumbnail_path:
-                    video.files["thumbnail"] = thumbnail_path
-                    video_store.save_video(video)
-                    self._clear_thumbnail_failure(video.video_id)
-                else:
-                    self._record_thumbnail_failure(video.video_id, signature)
-        finally:
-            self._log_queue.put("__THUMBNAILS_READY__")
+        HaizFlowController._catalog_media_for(self).create_missing_thumbnails(video_ids)
 
     @Slot()
     def openInputPreview(self):
@@ -2491,24 +1307,26 @@ class HaizFlowController(QObject):
         self._preview_original_style = self._copy_subtitle_style(selected_video.subtitle_style) if selected_video else self._current_subtitle_style()
         self._open_preview(video_path, "Input Preview Editor", True)
 
-    @Slot()
+    @Slot(result=bool)
     def openBatchSubtitleEditor(self):
         groups = self._batch_dimension_groups()
         if not groups:
             QMessageBox.information(None, "Subtitle presets", "Add at least one video before editing subtitles.")
-            return
+            return False
         self._preview_group_keys = [group["size_key"] for group in groups]
         self._preview_group_index = 0
         self._open_batch_group_preview(self._preview_group_keys[0])
+        return True
 
-    @Slot(str)
+    @Slot(str, result=bool)
     def openBatchSizeEditor(self, size_key):
         group = self._batch_dimension_group(size_key)
         if not group:
-            return
+            return False
         self._preview_group_keys = [size_key]
         self._preview_group_index = 0
         self._open_batch_group_preview(size_key)
+        return True
 
     @Slot()
     def openInputFile(self):
@@ -2561,7 +1379,11 @@ class HaizFlowController(QObject):
     def commitPreviewEdits(self):
         style = self._current_subtitle_style(self._preview_original_style)
         if self._preview_edit_scope == "size_group":
-            for video_id in self._preview_target_video_ids:
+            target_ids = [video_id for video_id in self._preview_target_video_ids if video_store.get_video(video_id)]
+            if not target_ids:
+                self._clear_preview_edit_session()
+                return False
+            for video_id in target_ids:
                 video_store.update_video(video_id, subtitle_style=style, subtitle_override=False)
             self._refresh_batch_model()
             self.batchChanged.emit()
@@ -2583,6 +1405,13 @@ class HaizFlowController(QObject):
                 self.refreshVideos()
                 self.selectedVideoChanged.emit()
                 self.batchChanged.emit()
+            else:
+                self._clear_preview_edit_session()
+                return False
+        elif self._preview_edit_scope != "draft" or self._preview_original_style is None:
+            # A terminal save clears the target.  Never acknowledge a later save that
+            # has nowhere to persist its subtitle style.
+            return False
         self._clear_preview_edit_session()
         return True
 
@@ -2664,223 +1493,69 @@ class HaizFlowController(QObject):
             changes["review_approved"] = review_approved
         video_store.update_video(video.video_id, **changes)
 
+    @staticmethod
+    def _processing_delegate_for(host):
+        return getattr(host, "_processing_lifecycle", None) or ProcessingLifecycleController(host)
+
     def _enqueue_video(self, video_id: str) -> bool:
-        video = video_store.get_video(video_id)
-        if not video or video.status == "processing" or self._processing_queue.contains(video_id):
-            return False
-        video_store.update_video(video_id, status="pending", step="queued", step_detail="Queued for processing")
-        added = self._processing_queue.enqueue(video_id)
-        if not added:
-            return False
-        video_store.log_to_video(video_id, "Added to the processing queue.")
-        self._update_queue_positions()
-        self.processingChanged.emit()
-        self.selectedVideoChanged.emit()
-        self._log_queue.put("__QUEUE_CHANGED__")
-        return True
+        return HaizFlowController._processing_delegate_for(self).enqueue_video(video_id)
 
     def _enqueue_videos(self, video_ids) -> int:
-        added = 0
-        for video_id in video_ids:
-            if self._enqueue_video(video_id):
-                added += 1
-        return added
+        return HaizFlowController._processing_delegate_for(self).enqueue_videos(video_ids)
 
     def _update_queue_positions(self) -> None:
-        for position, video_id in enumerate(self._processing_queue.pending_ids(), start=1):
-            video = video_store.get_video(video_id)
-            if video and video.status == "pending":
-                video_store.update_video(video_id, step="queued", step_detail=f"Queued: position {position}")
+        HaizFlowController._processing_delegate_for(self).update_queue_positions()
 
     def _on_queue_video_started(self, video_id: str) -> None:
-        if video_id in self._deleted_video_ids:
-            return
-        video = video_store.get_video(video_id)
-        if not video or video.status == "cancelled":
-            return
-        self._activate_pending_device_for_next_video(video_id)
-        video_store.update_video(video_id, status="processing", step="starting", step_detail="Processing started")
-        video_store.log_to_video(video_id, "Processing started from the shared queue.")
-        self._update_queue_positions()
-        self._log_queue.put(f"__QUEUE_STARTED__:{video_id}")
+        HaizFlowController._processing_delegate_for(self).on_queue_video_started(video_id)
 
     def _on_queue_video_finished(self, video_id: str) -> None:
-        self._update_queue_positions()
-        self._log_queue.put(f"__QUEUE_FINISHED__:{video_id}")
+        HaizFlowController._processing_delegate_for(self).on_queue_video_finished(video_id)
 
     def _on_processing_queue_idle(self) -> None:
-        self._log_queue.put("__QUEUE_IDLE__")
+        HaizFlowController._processing_delegate_for(self).on_processing_queue_idle()
 
     def _on_processing_queue_error(self, video_id: str, exc: Exception) -> None:
-        if not video_id or video_id in self._deleted_video_ids:
-            return
-        video = video_store.get_video(video_id)
-        if not video:
-            return
-        message = f"Processing queue recovered from an internal error: {exc}"
-        video_store.log_to_video(video_id, message)
-        video_store.update_video(video_id, status="failed", error=str(exc), step="failed", step_detail=message)
+        HaizFlowController._processing_delegate_for(self).on_processing_queue_error(video_id, exc)
 
     def _execute_pipeline(self, video_id):
-        video = video_store.get_video(video_id)
-        if not video or video.status == "cancelled" or video_id in self._deleted_video_ids:
-            return
-        try:
-            if not self._initial_model_warmup_done.is_set():
-                video_store.log_to_video(video_id, "Waiting for startup model warm-up to finish.")
-                self._initial_model_warmup_done.wait()
-            if getattr(self, "_shutdown_started", False):
-                return
-            runtime_probe_error = getattr(self, "_runtime_probe_error", "")
-            if runtime_probe_error:
-                raise RuntimeError(f"Model runtime validation failed: {runtime_probe_error}")
-            # A device switch owns this lock. Crossing the barrier guarantees
-            # that model processes are stable before the pipeline uses them.
-            with self._model_runtime_lock:
-                pass
-            from haizflow.pipeline.process_video import process_video_sync
+        HaizFlowController._processing_delegate_for(self).execute_pipeline(video_id)
 
-            process_video_sync(video_id)
-        except Exception as exc:
-            if video_id not in self._deleted_video_ids:
-                message = f"Desktop worker failed before pipeline could start: {exc}"
-                video_store.log_to_video(video_id, message)
-                video_store.update_video(video_id, status="failed", error=str(exc), step="failed")
-
-    @staticmethod
-    def _prepare_batch_models(video_id):
-        profile = runtime_profile()
-        video_store.log_to_video(video_id, f"Preparing shared models for batch profile: {profile.summary}.")
-        try:
-            if profile.warm_hymt2_on_startup:
-                warm_hymt2_worker(lambda detail: video_store.log_to_video(video_id, detail))
-            if profile.warm_whisper_on_startup:
-                from haizflow.pipeline.transcribe import warm_whisperx_model
-
-                warm_whisperx_model()
-            video_store.log_to_video(
-                video_id,
-                "Shared models are ready for the batch.",
-            )
-        except Exception as exc:
-            # The video pipeline can retry initialization at the point of use.
-            video_store.log_to_video(video_id, f"Batch model preparation deferred: {exc}")
+    def _prepare_batch_models(self, video_id):
+        HaizFlowController._processing_delegate_for(self).prepare_batch_models(video_id)
 
     def _on_video_log(self, video_id, line):
-        if video_id == self._selected_video_id:
-            self._log_queue.put(("video_log", video_id, line))
+        HaizFlowController._processing_delegate_for(self).on_video_log(video_id, line)
 
     def _drain_log_queue(self):
-        pending_lines = []
-        while True:
-            try:
-                item = self._log_queue.get_nowait()
-            except queue.Empty:
-                break
-            if isinstance(item, tuple) and len(item) == 3 and item[0] == "video_log":
-                _kind, video_id, line = item
-                if video_id == self._selected_video_id:
-                    pending_lines.append(line)
-            elif item.startswith("__QUEUE_STARTED__:"):
-                self.refreshVideos()
-                self.selectedVideoChanged.emit()
-                self.processingChanged.emit()
-                self._refresh_batch_model()
-                self.batchChanged.emit()
-            elif item.startswith("__QUEUE_FINISHED__:"):
-                self.refreshVideos()
-                self.selectedVideoChanged.emit()
-                self._refresh_batch_model()
-                self.batchChanged.emit()
-            elif item == "__QUEUE_IDLE__":
-                if self._processing_queue.has_work:
-                    continue
-                self._batch_running = False
-                self._batch_stop_requested = False
-                self.refreshVideos()
-                self.processingChanged.emit()
-                self.batchChanged.emit()
-            elif item == "__QUEUE_CHANGED__":
-                self.refreshVideos()
-                self.selectedVideoChanged.emit()
-                self.batchChanged.emit()
-            elif item == "__THUMBNAILS_READY__":
-                self._thumbnail_refresh_running = False
-                self.refreshVideos()
-            elif item == "__VIDEO_DIMENSIONS_READY__":
-                self.poll_videos()
-        if pending_lines and self._append_logs(pending_lines):
-            self.logsChanged.emit()
+        HaizFlowController._processing_delegate_for(self).drain_log_queue()
 
     def _read_video_logs(self, video_id):
-        return ActivityLogBuffer.read_tail(video_store.get_video_logs_path(video_id))
+        return HaizFlowController._processing_delegate_for(self).read_video_logs(video_id)
 
     def _replace_logs(self, text: str) -> None:
-        self._log_buffer.replace(text)
-        self._logs = self._log_buffer.text
+        HaizFlowController._processing_delegate_for(self).replace_logs(text)
 
     def _clear_logs(self) -> None:
-        self._log_buffer.clear()
-        self._logs = ""
+        HaizFlowController._processing_delegate_for(self).clear_logs()
 
     def _append_logs(self, lines) -> bool:
-        if not self._log_buffer.append(lines):
-            return False
-        self._logs = self._log_buffer.text
-        return True
+        return HaizFlowController._processing_delegate_for(self).append_logs(lines)
 
     def _refresh_batch_model(self):
-        videos = []
-        valid_ids = []
-        catalog = getattr(self, "_catalog_videos", {})
-        for video_id in self._batch_video_ids:
-            video = catalog.get(video_id) or video_store.get_video(video_id)
-            if video:
-                video = self._ensure_video_dimensions(video)
-                valid_ids.append(video_id)
-                videos.append(video)
-        self._batch_video_ids = valid_ids
-        self.batch_videos.set_videos(videos)
+        HaizFlowController._catalog_media_for(self).refresh_batch_model()
 
     def _ensure_video_dimensions(self, video):
-        if video.video_width > 0 and video.video_height > 0:
-            return video
-        video_path = self._resolve_video_file(video, ("video_input", "input_video"), ("input", "video.mp4"))
-        self._dimension_probe.request(video.video_id, video_path)
-        return video
+        return HaizFlowController._catalog_media_for(self).ensure_video_dimensions(video)
 
     def _on_video_dimensions_ready(self, video_id: str, width: int, height: int) -> None:
-        if self._shutdown_started or video_id in self._deleted_video_ids:
-            return
-        video_store.update_video(video_id, video_width=width, video_height=height)
-        self._log_queue.put("__VIDEO_DIMENSIONS_READY__")
+        HaizFlowController._catalog_media_for(self).on_video_dimensions_ready(video_id, width, height)
 
     def _batch_dimension_groups(self):
-        grouped = {}
-        catalog = getattr(self, "_catalog_videos", {})
-        for video_id in self._batch_video_ids:
-            video = catalog.get(video_id) or video_store.get_video(video_id)
-            if not video:
-                continue
-            video = self._ensure_video_dimensions(video)
-            if video.video_width > 0 and video.video_height > 0:
-                size_key = f"{video.video_width}x{video.video_height}"
-                label = f"{video.video_width} x {video.video_height}"
-            else:
-                size_key = f"unknown:{video.video_id}"
-                label = "Unknown size"
-            group = grouped.setdefault(size_key, {"size_key": size_key, "label": label, "videos": []})
-            group["videos"].append(video)
-        return sorted(
-            grouped.values(),
-            key=lambda group: (
-                -(group["videos"][0].video_width * group["videos"][0].video_height),
-                group["label"],
-            ),
-        )
+        return HaizFlowController._catalog_media_for(self).batch_dimension_groups()
 
     def _batch_dimension_group(self, size_key):
-        return next((group for group in self._batch_dimension_groups() if group["size_key"] == size_key), None)
+        return HaizFlowController._catalog_media_for(self).batch_dimension_group(size_key)
 
     _build_project_summaries = staticmethod(build_project_summaries)
     _normalize_video_path = staticmethod(normalize_video_path)
@@ -2908,117 +1583,38 @@ class HaizFlowController(QObject):
         return supported_voices[0] if supported_voices else ""
 
     def _load_video_preview(self, video):
-        self._subtitle_position_x = video.subtitle_style.position_x_percent
-        self._subtitle_position_y = video.subtitle_style.position_y_percent
-        self._caption_font_size = video.subtitle_style.font_size
-        self._subtitle_box_width = video.subtitle_style.box_width_percent
-        self._subtitle_box_height = video.subtitle_style.box_height_percent
-        self.previewChanged.emit()
+        self._preview_media.load_video_preview(video)
 
-    @staticmethod
-    def _copy_subtitle_style(style):
-        data = style.model_dump() if hasattr(style, "model_dump") else style.dict()
-        return SubtitleStyle(**data)
+    def _copy_subtitle_style(self, style):
+        return self._preview_media.copy_subtitle_style(style)
 
     def _current_subtitle_style(self, base=None):
-        base = base or SubtitleStyle()
-        return SubtitleStyle(
-            font_size=self._caption_font_size,
-            margin_bottom=base.margin_bottom,
-            outline=base.outline,
-            max_chars_per_line=base.max_chars_per_line,
-            position_x_percent=self._subtitle_position_x,
-            position_y_percent=self._subtitle_position_y,
-            box_width_percent=self._subtitle_box_width,
-            box_height_percent=self._subtitle_box_height,
-        )
+        return self._preview_media.current_subtitle_style(base)
 
     def _set_preview_style(self, style):
-        self._subtitle_position_x = style.position_x_percent
-        self._subtitle_position_y = style.position_y_percent
-        self._caption_font_size = style.font_size
-        self._subtitle_box_width = style.box_width_percent
-        self._subtitle_box_height = style.box_height_percent
+        self._preview_media.set_preview_style(style)
 
     def _open_batch_group_preview(self, size_key):
-        group = self._batch_dimension_group(size_key)
-        if not group:
-            self._clear_preview_edit_session()
-            return
-        representative = group["videos"][0]
-        video_path = self._resolve_video_file(representative, ("video_input", "input_video"), ("input", "video.mp4"))
-        self._preview_edit_scope = "size_group"
-        self._preview_target_video_ids = [video.video_id for video in group["videos"]]
-        self._preview_original_style = self._copy_subtitle_style(representative.subtitle_style)
-        self._set_preview_style(representative.subtitle_style)
-        index_label = f"{self._preview_group_index + 1}/{len(self._preview_group_keys)}"
-        title = f"{group['label']} | {index_label}"
-        self._open_preview(video_path, title, True)
+        self._preview_media.open_batch_group_preview(size_key)
 
     def _clear_preview_edit_session(self):
-        self._preview_edit_scope = "draft"
-        self._preview_target_video_ids = []
-        self._preview_group_keys = []
-        self._preview_group_index = -1
-        self._preview_original_style = None
+        self._preview_media.clear_preview_edit_session()
 
     def _apply_preview_edits(self, subtitle_x, subtitle_y, box_width, box_height, font_size):
-        self._subtitle_position_x = max(0, min(100, int(subtitle_x)))
-        self._subtitle_position_y = max(0, min(100, int(subtitle_y)))
-        self._subtitle_box_width = max(20, min(95, int(box_width)))
-        self._subtitle_box_height = max(6, min(35, int(box_height)))
-        self._caption_font_size = max(10, min(160, int(font_size)))
+        self._preview_media.apply_preview_edits(subtitle_x, subtitle_y, box_width, box_height, font_size)
 
     def _open_preview(self, path: str, title: str, interactive: bool):
-        self._preview_title = title
-        self._preview_interactive = interactive
-        self._preview_source = QUrl.fromLocalFile(path).toString()
-        selected_video = video_store.get_video(self._selected_video_id) if self._selected_video_id else None
-        thumbnail_path = (selected_video.files or {}).get("thumbnail", "") if selected_video else ""
-        if not os.path.exists(thumbnail_path):
-            thumbnail_path = self._video_thumbnail_path(selected_video.video_id) if selected_video else self._draft_thumbnail_path()
-            thumbnail_path = self._create_video_thumbnail_path(path, thumbnail_path)
-            if selected_video and thumbnail_path:
-                selected_video.files["thumbnail"] = thumbnail_path
-                video_store.save_video(selected_video)
-        poster_source = thumbnail_source(thumbnail_path)
-        self._preview_poster_source = poster_source or self._video_thumbnail_source
-        self._preview_aspect_ratio = 16 / 9
-        try:
-            width, height = get_video_dimensions(path)
-            if width > 0 and height > 0:
-                self._preview_aspect_ratio = width / height
-        except RuntimeError:
-            pass
-        self.previewChanged.emit()
-        self.previewOpenRequested.emit()
+        self._preview_media.open_preview(path, title, interactive)
 
     def _draft_thumbnail_path(self) -> str:
-        if not self.hasOpenProject:
-            return ""
-        return os.path.join(
-            self._selected_project_root(),
-            ".input-thumbnail.jpg",
-        )
+        return self._preview_media.draft_thumbnail_path()
 
     @staticmethod
     def _video_thumbnail_path(video_id: str) -> str:
         return os.path.join(video_store.get_video_dir(video_id), "thumbnail.jpg")
 
     def _assign_project_thumbnail(self, video) -> None:
-        thumbnail_path = self._create_video_thumbnail_path(
-            video.files["video_input"],
-            self._video_thumbnail_path(video.video_id),
-        )
-        if thumbnail_path:
-            video.files["thumbnail"] = thumbnail_path
-            video_store.save_video(video)
-        draft_thumbnail = self._draft_thumbnail_path()
-        if draft_thumbnail and os.path.isfile(draft_thumbnail):
-            try:
-                os.remove(draft_thumbnail)
-            except OSError:
-                pass
+        self._preview_media.assign_project_thumbnail(video)
 
     @staticmethod
     def _create_video_thumbnail(path: str, output_path: str = "") -> str:
@@ -3028,23 +1624,6 @@ class HaizFlowController(QObject):
     _create_video_thumbnail_path = staticmethod(create_video_thumbnail_path)
 
     def _migrate_legacy_project_thumbnails(self) -> None:
-        legacy_directory = os.path.join(RUNTIME_DATA_DIR, "cache", "thumbnails")
-        video_store.migrate_legacy_thumbnails(legacy_directory)
-        for video in video_store.list_videos():
-            expected_path = self._video_thumbnail_path(video.video_id)
-            changed = False
-            if not os.path.exists(expected_path):
-                source_path = self._resolve_video_file(video, ("video_input", "input_video"), ("input", "video.mp4"))
-                created_path = self._create_video_thumbnail_path(source_path, expected_path)
-                if created_path:
-                    video.files["thumbnail"] = created_path
-                    changed = True
-            if changed:
-                video_store.save_video(video)
-        if os.path.isdir(legacy_directory):
-            try:
-                shutil.rmtree(legacy_directory)
-            except OSError:
-                pass
+        self._preview_media.migrate_legacy_project_thumbnails()
 
     _open_path = staticmethod(open_path)

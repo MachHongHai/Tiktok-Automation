@@ -109,6 +109,38 @@ Module {
             isReadonly: true
         }
         Property {
+            name: "mediaImportBusy"
+            type: "bool"
+            read: "mediaImportBusy"
+            notify: "mediaImportChanged"
+            index: 83
+            isReadonly: true
+        }
+        Property {
+            name: "mediaImportTotal"
+            type: "int"
+            read: "mediaImportTotal"
+            notify: "mediaImportChanged"
+            index: 84
+            isReadonly: true
+        }
+        Property {
+            name: "mediaImportCompleted"
+            type: "int"
+            read: "mediaImportCompleted"
+            notify: "mediaImportChanged"
+            index: 85
+            isReadonly: true
+        }
+        Property {
+            name: "mediaImportStatus"
+            type: "QString"
+            read: "mediaImportStatus"
+            notify: "mediaImportChanged"
+            index: 86
+            isReadonly: true
+        }
+        Property {
             name: "isBatchRunning"
             type: "bool"
             read: "isBatchRunning"
@@ -677,6 +709,7 @@ Module {
         Signal { name: "projectPrepared" }
         Signal { name: "urlImportFinished" }
         Signal { name: "channelImportChanged" }
+        Signal { name: "mediaImportChanged" }
         Method {
             name: "processingDeviceCompatible"
             type: "bool"
@@ -792,9 +825,10 @@ Module {
         Method { name: "deleteCurrentProject" }
         Method { name: "refreshVideos" }
         Method { name: "openInputPreview" }
-        Method { name: "openBatchSubtitleEditor" }
+        Method { name: "openBatchSubtitleEditor"; type: "bool" }
         Method {
             name: "openBatchSizeEditor"
+            type: "bool"
             Parameter { name: "a1"; type: "QString" }
         }
         Method { name: "openInputFile" }

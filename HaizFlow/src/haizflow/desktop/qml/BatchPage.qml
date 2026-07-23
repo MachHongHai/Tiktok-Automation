@@ -16,6 +16,7 @@ Item {
 
     property bool dropActive: false
     readonly property bool hasChannelImport: AppController.hasChannelImportSession
+    readonly property bool compactHeight: height < 740
 
     opacity: visible ? 1 : 0
     transform: Translate {
@@ -35,13 +36,13 @@ Item {
 
     ColumnLayout {
         anchors.fill: parent
-        anchors.topMargin: Theme.space20
-        spacing: Theme.space20
+        anchors.topMargin: root.compactHeight ? Theme.space12 : Theme.space20
+        spacing: root.compactHeight ? Theme.space12 : Theme.space20
 
         PageHeader {
             Layout.fillWidth: true
-            Layout.minimumHeight: 58
-            Layout.preferredHeight: 58
+            Layout.minimumHeight: root.compactHeight ? 52 : 58
+            Layout.preferredHeight: root.compactHeight ? 52 : 58
             title: AppController.projectName || I18n.t("Batch project")
             subtitle: qsTr("%1 %2").arg(AppController.batchCount).arg(I18n.t("videos"))
 
@@ -95,7 +96,7 @@ Item {
 
         Rectangle {
             Layout.fillWidth: true
-            Layout.preferredHeight: root.hasChannelImport ? 68 : 88
+            Layout.preferredHeight: root.hasChannelImport ? (root.compactHeight ? 60 : 68) : 88
             radius: Theme.radius
             color: Theme.surface
             border.width: 1
@@ -173,7 +174,7 @@ Item {
             id: importStrip
 
             Layout.fillWidth: true
-            Layout.preferredHeight: root.hasChannelImport ? 68 : 88
+            Layout.preferredHeight: root.hasChannelImport ? (root.compactHeight ? 60 : 68) : 88
             radius: Theme.radius
             color: root.dropActive ? Theme.interactiveMuted : Theme.surfaceElevated
             border.width: 1
@@ -208,7 +209,9 @@ Item {
 
                     Text {
                         Layout.fillWidth: true
-                        text: I18n.t("Only MP4, MOV and MKV files are added")
+                        text: AppController.mediaImportBusy
+                            ? qsTr("Adding %1 / %2 videos…").arg(AppController.mediaImportCompleted).arg(AppController.mediaImportTotal)
+                            : I18n.t("Only MP4, MOV and MKV files are added")
                         color: Theme.textMuted
                         font.pixelSize: Theme.caption
                         textFormat: Text.PlainText
@@ -278,7 +281,7 @@ Item {
 
         Rectangle {
             Layout.fillWidth: true
-            Layout.preferredHeight: visible ? 72 : 0
+            Layout.preferredHeight: visible ? (root.compactHeight ? 60 : 72) : 0
             visible: root.hasChannelImport
             radius: Theme.radius
             color: AppController.channelImportBusy ? Theme.interactiveMuted : Theme.surfaceElevated
@@ -381,6 +384,7 @@ Item {
             Rectangle {
                 Layout.fillWidth: true
                 Layout.fillHeight: true
+                Layout.minimumHeight: queueList.cellHeight + 20
                 radius: Theme.radius
                 color: Theme.surface
                 border.width: 1

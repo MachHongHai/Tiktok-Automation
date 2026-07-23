@@ -199,7 +199,9 @@ Item {
 
             GridLayout {
                 Layout.fillWidth: true
-                columns: width >= 980 ? 5 : 3
+                // At the minimum desktop width this still fits five compact controls;
+                // keeping it to one row leaves room for a full candidate card at 720 px.
+                columns: width >= 900 ? 5 : 3
                 columnSpacing: Theme.space12
                 rowSpacing: Theme.space12
 
@@ -440,6 +442,7 @@ Item {
 
                     Layout.fillWidth: true
                     Layout.fillHeight: true
+                    Layout.minimumHeight: 92
                     clip: true
                     model: root.importer.candidateModel
                     reuseItems: true

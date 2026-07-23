@@ -2,7 +2,7 @@
 
 Tài liệu này là nguồn duy nhất theo dõi các rủi ro phát hành của ứng dụng Windows. Mỗi bản release phải cập nhật trạng thái, chạy toàn bộ release gate và lưu `BUILD-INFO.json` cùng `SHA256SUMS.txt` trong artifact.
 
-Ngày rà soát: 2026-07-18
+Ngày rà soát: 2026-07-24
 
 ## Quy ước trạng thái
 
@@ -16,8 +16,8 @@ Ngày rà soát: 2026-07-18
 | --- | --- | --- | --- |
 | 1 | Định danh và xóa project an toàn | **Hoàn tất** | Project mới dùng UUID; project đơn/batch cùng tên có root riêng; legacy root được giữ; manifest, shared-root và path traversal được kiểm tra trước khi xóa. |
 | 2 | License và third-party compliance | **Runtime đã nâng cấp, còn legal gate** | Source code dùng Apache-2.0; FFmpeg đã nâng lên 8.1.2 Essentials, pin SHA-256 và kèm source archive có chữ ký. Build sinh notices từ đúng `.venv`. Trước khi công khai vẫn phải cung cấp corresponding source/build material của các thư viện GPL liên kết tĩnh và được người chịu trách nhiệm pháp lý duyệt. |
-| 3 | Frozen acceptance và artifact mới | **Pipeline sẵn sàng; cần chạy ở revision phát hành** | Build xóa artifact cũ có kiểm soát, tạo metadata/checksum sau smoke, CPU runtime probe, GPU probe khi khả dụng và Qt/QML smoke với data tạm. `dist/` không được commit, nên mỗi revision phát hành phải chạy build để tạo và nghiệm thu artifact mới. Artifact ngày 2026-07-16 chỉ là bằng chứng lịch sử, không thay thế nghiệm thu revision hiện tại. |
-| 4 | Installer, nâng cấp và code signing | **Chờ certificate** | Có định nghĩa Inno Setup, kiểm tra dung lượng theo artifact thật, version resource/icon và cơ chế ký Authenticode. Cần certificate thật để ký EXE/installer và nghiệm thu trên Windows sạch. |
+| 3 | Frozen acceptance và artifact mới | **Chặn phát hành cho đến khi source sạch** | Build xóa artifact cũ có kiểm soát, tạo metadata/checksum sau smoke, CPU runtime probe, GPU probe khi khả dụng và Qt/QML smoke với data tạm. `dist/` không được commit, nên mỗi revision phát hành phải được commit trước, rồi build và nghiệm thu artifact mới. Artifact ngày 2026-07-16 chỉ là bằng chứng lịch sử, không thay thế nghiệm thu revision hiện tại. |
+| 4 | Installer, nâng cấp và code signing | **Chờ certificate và artifact sạch** | Có định nghĩa Inno Setup, kiểm tra dung lượng theo artifact thật, version resource/icon và cơ chế ký Authenticode. Cần certificate thật, artifact từ worktree sạch và nghiệm thu trên Windows sạch trước khi ký EXE/installer. |
 | 5 | Khóa revision và checksum model | **Hoàn tất** | HY-MT2 GPU khóa `9a341cd1…`, HY-MT2 CPU khóa `1cd52087…`, Whisper small khóa `536b0662…`; các file model có size/SHA-256 cố định. Build mặc định nhúng cả ba model và frozen smoke xác minh integrity. |
 | 6 | Single-instance ứng dụng | **Hoàn tất** | `QLocalServer` tạo named pipe theo user. Instance thứ hai gửi yêu cầu activate rồi thoát; instance chính khôi phục cửa sổ. Stale server được xử lý và smoke mode không chiếm khóa. Khóa file/index là phạm vi riêng của ID 7. |
 | 7 | Phục hồi project index | **Hoàn tất** | `projects.json` được khóa liên tiến trình, ghi atomic, giữ last-known-good `.bak`, sao chép bản hỏng sang quarantine và rebuild từ manifest trong các project root đã đăng ký. Backup được hợp nhất với manifest mới hơn; lỗi không thể phục hồi chặn ghi thay vì tạo index rỗng. |
@@ -28,6 +28,7 @@ Ngày rà soát: 2026-07-18
 | 12 | Chẩn đoán production | **Còn lại** | Log rotation, Qt/thread exception hooks, build ID và chức năng export diagnostics có redaction. |
 | 13 | Shutdown và phục hồi video gián đoạn | **Hoàn tất** | Close event hỏi xác nhận khi còn xử lý/tải; active video được pause, subprocess tree bị dừng, queue từ chối việc mới và chờ worker. Windows Job Object dọn process con khi app crash; lần mở sau chuyển metadata `processing` còn sót thành `paused` có thể resume. Smoke mode luôn dùng data tạm thay vì `.env` thật. |
 | 14 | Portable storage theo thư mục cài đặt | **Hoàn tất** | `HAIZFLOW_HOME` là hard boundary; Qt/QML, Torch, Hugging Face, pip/uv, CUDA/Numba, temp, log, settings và model đều nằm dưới thư mục người dùng chọn. Source hiện dùng `D:\HaizFlowData`; smoke xác nhận không ghi lại `%LOCALAPPDATA%\HaizFlow`. |
+| 15 | Hygiene source và cấu trúc desktop | **Chặn release build** | Hai utility không dùng đã bị xóa; thư mục `build/` phải rỗng trước clean build. Tám desktop controller sau refactor, QML facade và tài liệu kiến trúc phải cùng nằm trong một commit; `git status --porcelain` phải rỗng trước khi chạy build release. |
 
 ## License gate
 

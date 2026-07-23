@@ -18,7 +18,15 @@ PySide6 / QML desktop shell
 src/haizflow/
   desktop/
     main.py                 Qt application bootstrap
-    qml_controller.py       Thin QML-facing state and command coordinator
+    qml_controller.py       Stable QML singleton facade, observable state, and routing
+    catalog_media_controller.py        Catalog projections, thumbnails, and media metadata
+    preview_media_controller.py        Subtitle-preview edit session and preview media state
+    processing_lifecycle_controller.py Queue, pipeline callbacks, and live logs
+    project_commands_controller.py     Mutating project, batch, and video commands
+    project_import_controller.py       Local, URL, and channel media acquisition
+    project_workspace_controller.py    Project selection and incremental catalog/model updates
+    runtime_device_controller.py       Runtime warm-up, shutdown, and hardware transitions
+    settings_controller.py             Persistent desktop settings operations
     catalog.py              Supported target languages and TTS voices
     localization.py         Localized native Qt dialog adapters
     media.py                Video-path, thumbnail, and OS-open helpers
@@ -60,7 +68,8 @@ src/haizflow/
 New code should follow these boundaries so features remain independently testable:
 
 - `desktop/qml/` owns presentation, animation, layout, and direct user interaction.
-- `desktop/qml_controller.py` translates QML commands into application operations and exposes observable state. It must not implement media algorithms.
+- `desktop/qml_controller.py` is the stable QML singleton facade. It owns observable UI state and delegates commands to the focused desktop controllers; it must not implement media algorithms or project workflows.
+- `desktop/*_controller.py` owns one desktop workflow each. Controllers may depend on services and the QML facade's narrow host interface, but must not import QML files or create another QML API surface.
 - `desktop/models.py` owns list-model roles and update semantics. Add a new model here instead of embedding it in the controller.
 - `services/` owns reusable application use cases, persistence, queues, and isolated model-worker protocols. Services must not import QML files.
 - `pipeline/` owns ordered media stages. A stage receives explicit inputs, writes declared outputs, and reports progress through callbacks.
@@ -87,7 +96,7 @@ Run `scripts/test.ps1` before merging. It compiles application, script, and test
 
 1. `haizflow_desktop.py` relaunches itself with `.venv\Scripts\python.exe` when available. The source launcher exits after creating the project-runtime process; it does not import Qt or ML packages from the system Python installation.
 2. `haizflow.desktop.main` creates the Qt application and registers `HaizFlowController` with the QML engine.
-3. `HaizFlowController` loads settings and project metadata, starts polling timers, then warms the persistent HY-MT2 worker followed by WhisperX on a background thread.
+3. `HaizFlowController` loads settings and project metadata, starts polling timers, and schedules legacy migration/recovery/thumbnail maintenance only after the first Qt frame. Model warm-up also runs on a background thread.
 4. `Main.qml` routes between independent Single and Batch project libraries, their workspaces, the channel-import screen, and Settings.
 5. Closing the application cancels active network imports, unsubscribes log events, shuts down the HY-MT2 worker, and releases both warmed models.
 

@@ -64,15 +64,17 @@ Item {
         GridView {
             id: projectGrid
 
-            readonly property int columnCount: Math.max(1, Math.floor((width + Theme.space16) / 270))
-            readonly property real cardWidth: Math.min(320, Math.floor(
-                (width - (columnCount - 1) * Theme.space16) / columnCount))
+            // GridView advances by cellWidth.  Keeping the gap inside each cell prevents
+            // the last card from overflowing and silently losing an otherwise valid column.
+            readonly property int columnCount: Math.max(1, Math.floor((width + Theme.space16) / (270 + Theme.space16)))
+            readonly property real cellContentWidth: Math.floor(width / columnCount)
+            readonly property real cardWidth: Math.min(320, Math.max(1, cellContentWidth - Theme.space16))
             readonly property real cardHeight: Math.round(cardWidth * 0.58 + 82)
 
             Layout.fillWidth: true
             Layout.fillHeight: true
             model: root.projectModel
-            cellWidth: cardWidth + Theme.space16
+            cellWidth: cellContentWidth
             cellHeight: cardHeight + Theme.space16
             clip: true
             boundsBehavior: Flickable.StopAtBounds

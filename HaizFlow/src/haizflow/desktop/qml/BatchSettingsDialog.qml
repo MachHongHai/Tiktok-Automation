@@ -12,6 +12,7 @@ Dialog {
     signal requestEditAllSubtitles()
     signal requestEditSubtitleSize(string sizeKey)
     property bool changesApplied: false
+    property bool preserveDraftOnNextOpen: false
     property string draftWorkflowMode: "A"
     property string draftTargetLanguage: "vi"
     property string draftTtsVoice: ""
@@ -44,6 +45,10 @@ Dialog {
         draftOriginalVolume = Number(settings.originalVolume !== undefined ? settings.originalVolume : 60)
     }
 
+    function preserveDraftForSubtitleEditor() {
+        preserveDraftOnNextOpen = true
+    }
+
     modal: true
     focus: true
     width: Math.min(720, parent ? parent.width - 48 : 720)
@@ -59,7 +64,10 @@ Dialog {
 
     onOpened: {
         changesApplied = false
-        loadDraft()
+        if (preserveDraftOnNextOpen)
+            preserveDraftOnNextOpen = false
+        else
+            loadDraft()
     }
 
     enter: Transition {
